@@ -1,8 +1,10 @@
 package de.buderus.bridge;
 
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
+import jakarta.inject.Inject;
 import java.io.IOException;
-import java.security.GeneralSecurityException;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -11,6 +13,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import org.eclipse.paho.client.mqttv3.MqttException;
 
 @ApplicationScoped
@@ -20,19 +23,37 @@ public class Bridge implements AutoCloseable {
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor();
     private final ThreadPoolExecutor worker = new ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS,
             new ArrayBlockingQueue<>(1), new ThreadPoolExecutor.DiscardPolicy());
+    private final Supplier<Settings> configuration;
+    private final Supplier<RestSource> restSource;
+    private final Supplier<MqttSink> mqttSink;
     private Settings settings;
     private Events events;
     private RestSource rest;
     private MqttSink mqtt;
 
-    void start(Settings settings) throws GeneralSecurityException, MqttException {
-        this.settings = settings;
+    @Inject
+    Bridge(Instance<Settings> settings, Instance<RestSource> rest, Instance<MqttSink> mqtt) {
+        this(settings::get, rest::get, mqtt::get);
+    }
+
+    Bridge(Settings settings, RestSource rest, MqttSink mqtt) {
+        this(() -> settings, () -> rest, () -> mqtt);
+    }
+
+    private Bridge(Supplier<Settings> settings, Supplier<RestSource> rest, Supplier<MqttSink> mqtt) {
+        configuration = settings;
+        restSource = rest;
+        mqttSink = mqtt;
+    }
+
+    void start() throws MqttException {
+        settings = configuration.get();
         events = new Events(settings.logLevel(), settings.logFormat());
         if (settings.insecure()) {
             events.log("warn", "API TLS verification disabled; local exception permits man-in-the-middle attacks");
         }
-        rest = new RestSource(settings);
-        mqtt = new MqttSink(settings, events);
+        rest = restSource.get();
+        mqtt = mqttSink.get();
         mqtt.connect();
         scheduleNext();
         if (settings.pollOnStart()) {
@@ -114,6 +135,7 @@ public class Bridge implements AutoCloseable {
     }
 
     @Override
+    @PreDestroy
     public void close() {
         if (!stopped.compareAndSet(false, true)) {
             return;
@@ -121,7 +143,11 @@ public class Bridge implements AutoCloseable {
         timer.shutdownNow();
         worker.shutdownNow();
         if (rest != null) {
-            rest.close();
+            try {
+                rest.close();
+            } catch (RuntimeException e) {
+                events.log("warn", "http close failed");
+            }
         }
         try {
             worker.awaitTermination(2, TimeUnit.SECONDS);

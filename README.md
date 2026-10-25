@@ -39,7 +39,7 @@ docker compose up -d
 docker compose logs -f buderus-wp-to-mqtt
 ```
 
-Die Anwendungskonfiguration beider Implementierungen kommt **ausschließlich aus Umgebungsvariablen**. Die Anwendungen laden keine `.env`-Datei. Docker Compose übergibt deren Werte über `env_file`; `docker run` benötigt `--env-file`.
+Für den Containerbetrieb verwenden beide Implementierungen die **gemeinsamen Umgebungsvariablen**. Docker Compose übergibt die Werte aus `.env` über `env_file`; `docker run` benötigt `--env-file`. Go liest ausschließlich ENV. Quarkus verwendet seine reguläre Konfiguration über `application.properties` und SmallRye Config Mapping; es gibt keinen selbst geschriebenen `.env`-Loader.
 
 Die Vorlage ist eine Docker-ENV-Datei, kein Shell-Skript; nicht mit `source` einlesen. Werte mit Leerzeichen bleiben für die gemeinsame Nutzung mit Compose und `docker run --env-file` ohne Anführungszeichen, etwa `SCHEDULE=@every 60s`. Docker `--env-file` würde Anführungszeichen als Teil des Werts übernehmen. Bei einer manuellen Shell-Zuweisung dagegen separat quoten: `export SCHEDULE='@every 60s'`.
 
@@ -150,6 +150,18 @@ Mit `API_URL` werden Daten auf `MQTT_TOPIC` beziehungsweise `MQTT_TOPIC/feld` ve
 Die gemeinsame ENV-Oberfläche bedeutet nicht identische interne Implementierungen: Go verwendet eigene Transportpakete, Quarkus Java-Bibliotheken. Quarkus begrenzt `API_MAX_BODY_BYTES` wegen seiner Byte-Array-Verarbeitung auf `2147483646`; für Vergleichsläufe einen Wert innerhalb beider Grenzen verwenden. Weder diese Obergrenze noch ein akzeptierter Konfigurationswert garantieren ausreichend Container-RAM.
 
 **HTTP-Weiterleitungen:** Go folgt der Standard-Redirect-Policy seines HTTP-Clients. Quarkus folgt keinen Redirects und behandelt auch `3xx` als Nicht-2xx-Fehler. Direkte endgültige API-URLs verwenden, insbesondere für Vergleichsläufe; vollständige HTTP-Verhaltensparität wird nicht vorausgesetzt.
+
+### Quarkus-Konfiguration und Clients
+
+`quarkus/src/main/resources/application.properties` definiert die Anwendungswerte und bindet die gemeinsamen ENV-Namen über Quarkus-Property-Ausdrücke ein. Ein SmallRye-`@ConfigMapping` liest die nicht sensiblen Eigenschaften unter `bridge.*`. URLs und Zugangsdaten unter `bridge-sensitive.*` werden über die reguläre MicroProfile-Config-API erst innerhalb der abgesicherten Startvalidierung aufgelöst: Fehlerhafte Ausdrücke sollen keine sensiblen Fragmente in Bootstrap-Diagnosen ausgeben. Die zentrale Validierung prüft Endpunkte, Authentifizierung, Grenzen und Zeitplan. Die bestehenden ENV-Namen und ihre Standardwerte bleiben erhalten. Die üblichen Quarkus-Konfigurationsquellen und deren Priorität gelten weiterhin, beispielsweise System-Properties für lokale JVM-Läufe. Quarkus kann lokal auch seine standardmäßige `.env`-Konfigurationsquelle verwenden; der Containerbetrieb verlässt sich darauf nicht und kopiert keine `.env` ins Image.
+
+Auch Werte aus ENV unterliegen der normalen SmallRye-Expression-Auswertung: `${name}` verweist auf eine Eigenschaft, `${name:ersatz}` verwendet einen Ersatzwert. Soll etwa ein Passwort diese Zeichenfolge wörtlich enthalten, muss der Ausdruck für Quarkus als `\${name}` maskiert werden; `$$` ergibt ein einzelnes `$`. In einer `.properties`-Datei ist zusätzlich deren Backslash-Escaping zu beachten, bei Shell oder Compose deren jeweilige Interpolation. Go liest ENV-Werte dagegen unverändert. Für solche Sonderwerte getrennte implementierungsspezifische Overrides verwenden; identische rohe ENV-Werte bedeuten hier nicht automatisch identische Zugangsdaten. Einfache Dollarzeichen und Anführungszeichen werden nicht als Shell-Syntax behandelt.
+
+HTTP-Abrufe verwenden die offizielle Extension [`quarkus-rest-client`](https://quarkus.io/guides/rest-client). Ein wiederverwendbarer Client unterstützt die konfigurierten Ziel-URLs und liest Antworten als Stream statt als unbegrenzt gepuffertes `byte[]`. Größenlimit, Gesamttimeout einschließlich Body, Abbruch, deaktivierte Redirects und TLS-Prüfung bleiben Teil des Anwendungsvertrags.
+
+Für MQTT existiert die offizielle Extension [`quarkus-messaging-mqtt`](https://quarkus.io/guides/mqtt). Sie eignet sich für kanalbasierte Reactive-Messaging-Anwendungen, ist hier aber kein verhaltensgleicher Ersatz: Ihre ausgehende Sendebestätigung ist keine Broker-Bestätigung für die hier notwendige Pending-Sperre. Auch persistente Wiederholung, WebSocket-Verbindungen und das erneute `online` bei Reconnect müssen erhalten bleiben. Deshalb bleibt Paho hinter einem CDI-verwalteten MQTT-Adapter; die vorhandenen Zustell-, Speicher- und Shutdown-Grenzen werden nicht zugunsten einer Extension stillschweigend aufgegeben.
+
+Konfiguration und Transport-Lebenszyklen werden über CDI verdrahtet. Mapping und Zeitplan bleiben davon getrennt; blockierende Abrufe und Publish-Wartezeiten laufen nicht auf dem Vert.x-Event-Loop.
 
 ### Zeitplanung
 

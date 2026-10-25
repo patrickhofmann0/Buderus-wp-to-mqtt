@@ -61,7 +61,7 @@ class MqttDiscardTest {
     private static Settings settings(int qos) {
         var env = SettingsTest.env();
         env.putAll(Map.of("MQTT_QOS", Integer.toString(qos), "MQTT_PUBLISH_TIMEOUT", "20ms"));
-        return Settings.load(env);
+        return SettingsTest.settings(env);
     }
 
     private static Mapping.Message message() {

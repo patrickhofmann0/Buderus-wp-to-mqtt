@@ -1,136 +1,101 @@
 package de.buderus.bridge;
 
-import java.io.ByteArrayOutputStream;
+import io.quarkus.arc.Arc;
+import io.quarkus.rest.client.reactive.QuarkusRestClientBuilder;
+import io.quarkus.tls.TlsConfigurationRegistry;
+import jakarta.annotation.PreDestroy;
+import jakarta.inject.Inject;
+import jakarta.inject.Singleton;
 import java.io.IOException;
-import java.net.Socket;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.ByteBuffer;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.security.GeneralSecurityException;
-import java.security.cert.X509Certificate;
-import java.time.Duration;
 import java.util.Base64;
-import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLEngine;
-import javax.net.ssl.SSLParameters;
-import javax.net.ssl.X509ExtendedTrustManager;
+import java.util.concurrent.atomic.AtomicBoolean;
 
+@Singleton
 final class RestSource implements AutoCloseable {
-    private final HttpClient client;
+    private final HeatPumpApi client;
     private final Settings config;
+    private final String authorization;
+    private final Set<CompletableFuture<?>> requests = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean closed = new AtomicBoolean();
 
-    RestSource(Settings config) throws GeneralSecurityException {
+    @Inject
+    RestSource(Settings config) {
         this.config = config;
-        HttpClient.Builder builder = HttpClient.newBuilder().connectTimeout(config.apiTimeout())
-                .followRedirects(HttpClient.Redirect.NEVER);
+        authorization = !config.apiToken().isEmpty() ? "Bearer " + config.apiToken()
+                : !config.apiUser().isEmpty() ? "Basic " + Base64.getEncoder().encodeToString(
+                        (config.apiUser() + ":" + config.apiPassword()).getBytes(StandardCharsets.UTF_8))
+                : null;
+        var builder = QuarkusRestClientBuilder.newBuilder()
+                .baseUri(config.endpoints().getFirst().uri())
+                .connectTimeout(config.apiTimeout().toNanos(), TimeUnit.NANOSECONDS)
+                .readTimeout(config.apiTimeout().toNanos(), TimeUnit.NANOSECONDS)
+                .followRedirects(false)
+                .disableDefaultMapper(true)
+                .register(new BoundedResponseFilter(config.maxBody()));
         if (config.insecure()) {
-            SSLContext context = SSLContext.getInstance("TLS");
-            // Extended trust-manager callbacks deliberately bypass both certificate and peer identity checks.
-            context.init(null, new X509ExtendedTrustManager[] {new InsecureTrust()}, null);
-            SSLParameters parameters = new SSLParameters();
-            parameters.setEndpointIdentificationAlgorithm("");
-            builder.sslContext(context).sslParameters(parameters);
+            var registry = Arc.container().instance(TlsConfigurationRegistry.class).get();
+            builder.tlsConfiguration(registry.get("buderus-api-insecure").orElseThrow(
+                    () -> new IllegalStateException("missing API TLS configuration")));
         }
-        client = builder.build();
+        client = builder.build(HeatPumpApi.class);
     }
 
     byte[] fetch(Settings.Endpoint endpoint) throws IOException, InterruptedException {
-        HttpRequest.Builder request = HttpRequest.newBuilder(endpoint.uri()).timeout(config.apiTimeout()).GET();
-        if (!config.apiToken().isEmpty()) {
-            request.header("Authorization", "Bearer " + config.apiToken());
-        } else if (!config.apiUser().isEmpty()) {
-            String credentials = config.apiUser() + ":" + config.apiPassword();
-            request.header("Authorization", "Basic " + Base64.getEncoder()
-                    .encodeToString(credentials.getBytes(StandardCharsets.UTF_8)));
+        if (closed.get()) {
+            throw new IOException("http client is closed");
         }
-        CompletableFuture<HttpResponse<byte[]>> response = client.sendAsync(request.build(),
-                info -> new LimitedBody(config.maxBody()));
+        CompletableFuture<InputStream> response = null;
         try {
-            HttpResponse<byte[]> result = response.get(config.apiTimeout().toNanos(), TimeUnit.NANOSECONDS);
-            if (result.statusCode() < 200 || result.statusCode() >= 300) {
-                throw new IOException("http status " + result.statusCode());
+            response = client.fetch(endpoint.uri(), authorization).subscribeAsCompletionStage();
+            requests.add(response);
+            try (var body = response.get(config.apiTimeout().toNanos(), TimeUnit.NANOSECONDS)) {
+                byte[] bytes = body.readNBytes(config.maxBody() + 1);
+                if (bytes.length > config.maxBody()) {
+                    throw new IOException("response body exceeds limit");
+                }
+                return bytes;
             }
-            return result.body();
         } catch (TimeoutException e) {
             throw new IOException("http request timed out");
         } catch (ExecutionException e) {
+            for (Throwable cause = e.getCause(); cause != null; cause = cause.getCause()) {
+                if (cause instanceof BoundedResponseFilter.StatusException status) {
+                    throw new IOException("http status " + status.status);
+                }
+                if (cause instanceof BoundedResponseFilter.BodyLimitException) {
+                    throw new IOException("response body exceeds limit");
+                }
+            }
+            throw new IOException("http request failed");
+        } catch (RuntimeException e) {
             throw new IOException("http request failed");
         } finally {
-            // Cancellation terminates network reads as well as the caller's wait.
-            response.cancel(true);
+            if (response != null) {
+                requests.remove(response);
+                response.cancel(true);
+            }
         }
     }
 
     @Override
+    @PreDestroy
     public void close() {
-        client.shutdownNow();
-    }
-
-    private static final class LimitedBody implements HttpResponse.BodySubscriber<byte[]> {
-        private final CompletableFuture<byte[]> body = new CompletableFuture<>();
-        private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        private final int limit;
-        private Flow.Subscription subscription;
-
-        LimitedBody(int limit) {
-            this.limit = limit;
+        if (!closed.compareAndSet(false, true)) {
+            return;
         }
-
-        @Override
-        public CompletionStage<byte[]> getBody() {
-            return body;
+        requests.forEach(request -> request.cancel(true));
+        try {
+            client.close();
+        } catch (IOException e) {
+            throw new IllegalStateException("http client close failed");
         }
-
-        @Override
-        public void onSubscribe(Flow.Subscription subscription) {
-            this.subscription = subscription;
-            subscription.request(1);
-        }
-
-        @Override
-        public void onNext(List<ByteBuffer> chunks) {
-            for (ByteBuffer chunk : chunks) {
-                // Observe an extra byte without ever allocating an unbounded response buffer.
-                int count = Math.min(chunk.remaining(), limit - bytes.size() + 1);
-                byte[] copy = new byte[count];
-                chunk.get(copy);
-                bytes.writeBytes(copy);
-                if (bytes.size() > limit) {
-                    subscription.cancel();
-                    body.completeExceptionally(new IOException("response body exceeds limit"));
-                    return;
-                }
-            }
-            subscription.request(1);
-        }
-
-        @Override
-        public void onError(Throwable error) {
-            body.completeExceptionally(error);
-        }
-
-        @Override
-        public void onComplete() {
-            body.complete(bytes.toByteArray());
-        }
-    }
-
-    private static final class InsecureTrust extends X509ExtendedTrustManager {
-        @Override public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
-        @Override public void checkClientTrusted(X509Certificate[] c, String a) {}
-        @Override public void checkServerTrusted(X509Certificate[] c, String a) {}
-        @Override public void checkClientTrusted(X509Certificate[] c, String a, Socket s) {}
-        @Override public void checkServerTrusted(X509Certificate[] c, String a, Socket s) {}
-        @Override public void checkClientTrusted(X509Certificate[] c, String a, SSLEngine e) {}
-        @Override public void checkServerTrusted(X509Certificate[] c, String a, SSLEngine e) {}
     }
 }

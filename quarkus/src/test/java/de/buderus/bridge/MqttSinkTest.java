@@ -13,7 +13,7 @@ class MqttSinkTest {
         var env = SettingsTest.env();
         env.putAll(Map.of("MQTT_BROKER", broker.uri(), "MQTT_QOS", Integer.toString(qos),
                 "MQTT_PUBLISH_TIMEOUT", "2s"));
-        return Settings.load(env);
+        return SettingsTest.settings(env);
     }
 
     private Mapping.Message message(String payload) {

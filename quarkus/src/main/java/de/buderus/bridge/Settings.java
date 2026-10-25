@@ -1,5 +1,7 @@
 package de.buderus.bridge;
 
+import io.smallrye.config.ConfigValue;
+import io.smallrye.config.SmallRyeConfig;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -8,10 +10,10 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.eclipse.microprofile.config.Config;
 
 record Settings(List<Endpoint> endpoints, String apiToken, String apiUser, String apiPassword,
         Duration apiTimeout, int maxBody, boolean insecure, String broker, String clientId,
@@ -20,9 +22,9 @@ record Settings(List<Endpoint> endpoints, String apiToken, String apiUser, Strin
         String logLevel, String logFormat) {
     record Endpoint(String name, URI uri) {}
 
-    static Settings load(Map<String, String> env) {
+    static Settings from(BridgeConfig config, Config properties) {
         List<Endpoint> endpoints = new ArrayList<>();
-        String urls = env.getOrDefault("API_URLS", "");
+        String urls = sensitive(properties, "bridge-sensitive.api-urls");
         if (!urls.isEmpty()) {
             Set<String> names = new HashSet<>();
             for (String item : urls.split(",", -1)) {
@@ -32,47 +34,74 @@ record Settings(List<Endpoint> endpoints, String apiToken, String apiUser, Strin
                 endpoints.add(new Endpoint(entry[0].trim(), uri(entry[1].trim(), false, "API_URLS")));
             }
         } else {
-            endpoints.add(new Endpoint("", uri(env.getOrDefault("API_URL", ""), false, "API_URL")));
+            endpoints.add(new Endpoint("", uri(sensitive(properties, "bridge-sensitive.api-url"), false, "API_URL")));
         }
-        String token = env.getOrDefault("API_TOKEN", "");
-        String user = env.getOrDefault("API_USER", "");
-        String password = env.getOrDefault("API_PASSWORD", "");
+        String token = sensitive(properties, "bridge-sensitive.api-token");
+        String user = sensitive(properties, "bridge-sensitive.api-user");
+        String password = sensitive(properties, "bridge-sensitive.api-password");
         require(token.isEmpty() || (user.isEmpty() && password.isEmpty()), "api authentication");
         require(!control(token) && !control(user) && !control(password) && !token.contains(" ")
                 && !user.contains(":") && (password.isEmpty() || !user.isEmpty()), "api authentication");
-        Duration apiTimeout = duration(env.getOrDefault("API_TIMEOUT", "15s"), "API_TIMEOUT");
-        Duration mqttTimeout = duration(env.getOrDefault("MQTT_PUBLISH_TIMEOUT", "5s"), "MQTT_PUBLISH_TIMEOUT");
-        int maxBody = integer(env.getOrDefault("API_MAX_BODY_BYTES", "1048576"), 1, Integer.MAX_VALUE - 1,
+        Duration apiTimeout = duration(config.apiTimeout().orElse(""), "API_TIMEOUT");
+        Duration mqttTimeout = duration(config.mqttPublishTimeout().orElse(""), "MQTT_PUBLISH_TIMEOUT");
+        int maxBody = integer(config.apiMaxBodyBytes().orElse(""), 1, Integer.MAX_VALUE - 1,
                 "API_MAX_BODY_BYTES");
-        String broker = env.getOrDefault("MQTT_BROKER", "tcp://localhost:1883");
+        String broker = config.mqttBroker().orElse("");
         uri(broker, true, "MQTT_BROKER");
-        String clientId = env.getOrDefault("MQTT_CLIENT_ID", "buderus-wp-to-mqtt");
-        String mqttUser = env.getOrDefault("MQTT_USER", "");
-        String mqttPassword = env.getOrDefault("MQTT_PASSWORD", "");
+        String clientId = config.mqttClientId().orElse("");
+        String mqttUser = sensitive(properties, "bridge-sensitive.mqtt-user");
+        String mqttPassword = sensitive(properties, "bridge-sensitive.mqtt-password");
         require(!clientId.isEmpty() && mqttString(clientId) && mqttString(mqttUser)
                 && mqttPassword.getBytes(StandardCharsets.UTF_8).length <= 65535, "mqtt credentials");
-        String topic = env.getOrDefault("MQTT_TOPIC", "buderus/wp");
+        String topic = config.mqttTopic().orElse("");
         require(validTopic(topic), "MQTT_TOPIC");
-        boolean availability = bool(env, "MQTT_AVAILABILITY", "true");
+        boolean availability = bool(config.mqttAvailability().orElse(""), "MQTT_AVAILABILITY");
         require(!availability || validTopic(topic + "/status"), "MQTT_TOPIC");
-        String mapping = env.getOrDefault("MAPPING", "fields");
+        String mapping = config.mapping().orElse("");
         require(Set.of("fields", "passthrough").contains(mapping), "MAPPING");
         ZoneId zone;
         try {
-            zone = ZoneId.of(env.getOrDefault("TZ", "UTC"));
+            zone = ZoneId.of(config.timezone().orElse(""));
         } catch (RuntimeException e) {
             throw invalid("TZ");
         }
-        Plan plan = Plan.parse(env.getOrDefault("SCHEDULE", "@every 60s"), zone);
-        String level = env.getOrDefault("LOG_LEVEL", "info");
-        String format = env.getOrDefault("LOG_FORMAT", "json");
-        require(Set.of("debug", "info", "warn", "error").contains(level), "LOG_LEVEL");
-        require(Set.of("json", "text").contains(format), "LOG_FORMAT");
+        Plan plan = Plan.parse(config.schedule().orElse(""), zone);
+        String level = logLevel(config);
+        String format = logFormat(config);
         return new Settings(List.copyOf(endpoints), token, user, password, apiTimeout, maxBody,
-                bool(env, "API_INSECURE_SKIP_VERIFY", "false"), broker, clientId, mqttUser, mqttPassword,
-                topic, integer(env.getOrDefault("MQTT_QOS", "0"), 0, 2, "MQTT_QOS"),
-                bool(env, "MQTT_RETAIN", "false"), mqttTimeout, availability, mapping, plan,
-                bool(env, "POLL_ON_START", "true"), level, format);
+                bool(config.apiInsecureSkipVerify().orElse(""), "API_INSECURE_SKIP_VERIFY"),
+                broker, clientId, mqttUser, mqttPassword,
+                topic, integer(config.mqttQos().orElse(""), 0, 2, "MQTT_QOS"),
+                bool(config.mqttRetain().orElse(""), "MQTT_RETAIN"), mqttTimeout, availability, mapping, plan,
+                bool(config.pollOnStart().orElse(""), "POLL_ON_START"), level, format);
+    }
+
+    static String logLevel(BridgeConfig config) {
+        String level = config.logLevel().orElse("");
+        require(Set.of("debug", "info", "warn", "error").contains(level), "LOG_LEVEL");
+        return level;
+    }
+
+    private static String sensitive(Config properties, String key) {
+        try {
+            // Optional lookups can hide unresolved expressions as absent values.
+            ConfigValue value = properties.unwrap(SmallRyeConfig.class).getConfigValue(key);
+            require(!value.hasProblems(), "sensitive configuration");
+            return value.getValue() == null ? "" : value.getValue();
+        } catch (RuntimeException e) {
+            throw invalid("sensitive configuration");
+        }
+    }
+
+    static String logFormat(BridgeConfig config) {
+        String format = config.logFormat().orElse("");
+        require(Set.of("json", "text").contains(format), "LOG_FORMAT");
+        return format;
+    }
+
+    @Override
+    public String toString() {
+        return "Settings[redacted]";
     }
 
     String availabilityTopic() {
@@ -137,8 +166,8 @@ record Settings(List<Endpoint> endpoints, String apiToken, String apiUser, Strin
         return value.chars().anyMatch(c -> c < 32 || c == 127);
     }
 
-    private static boolean bool(Map<String, String> env, String key, String fallback) {
-        return switch (env.getOrDefault(key, fallback)) {
+    private static boolean bool(String value, String key) {
+        return switch (value) {
             case "1", "t", "T", "TRUE", "true", "True" -> true;
             case "0", "f", "F", "FALSE", "false", "False" -> false;
             default -> throw invalid(key);

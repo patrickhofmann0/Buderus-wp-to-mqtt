@@ -1,6 +1,9 @@
 package de.buderus.bridge;
 
 import io.quarkus.runtime.annotations.RegisterForReflection;
+import jakarta.annotation.PreDestroy;
+import jakarta.inject.Inject;
+import jakarta.inject.Singleton;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
@@ -21,6 +24,7 @@ import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 
+@Singleton
 @RegisterForReflection(classNames = {
         "org.eclipse.paho.client.mqttv3.internal.TCPNetworkModuleFactory",
         "org.eclipse.paho.client.mqttv3.internal.SSLNetworkModuleFactory",
@@ -41,6 +45,11 @@ final class MqttSink implements AutoCloseable {
     private boolean reconnectPending;
     private boolean connectedBefore;
     private long reconnectDelayMillis = 1000;
+
+    @Inject
+    MqttSink(Settings config) throws MqttException {
+        this(config, new Events(config.logLevel(), config.logFormat()));
+    }
 
     MqttSink(Settings config, Events events) throws MqttException {
         this(config, events, new MqttAsyncClient(normalizeBroker(config.broker()), config.clientId(),
@@ -227,6 +236,7 @@ final class MqttSink implements AutoCloseable {
     }
 
     @Override
+    @PreDestroy
     public void close() {
         IMqttToken offline = null;
         synchronized (lifecycle) {
