@@ -11,6 +11,21 @@ Aktuell werden abgefragt:
 
 Manche Gateways (z. B. MX400) liefern keinen Gesamt-Stromverbrauch (`electricity`), sondern nur `compressor` und `eheater`. In diesem Fall wird `electricity` als Summe der beiden berechnet.
 
+> [!NOTE]
+> **Inoffizielles Projekt.** Dieses Projekt steht in keiner Verbindung zu Bosch Thermotechnik GmbH oder Buderus und wird von diesen weder unterstützt noch geprüft. „Buderus“, „Bosch“ und „Logatherm“ sind Marken ihrer jeweiligen Inhaber.
+>
+> Der Dienst greift ausschließlich **lesend** auf die lokale API zu. Die Nutzung erfolgt auf eigene Verantwortung und ohne Gewähr – insbesondere für die Richtigkeit der Messwerte (z. B. für Abrechnungszwecke).
+
+### Getestete Hardware
+
+| Komponente | Version |
+|---|---|
+| Wärmepumpe | Buderus Logatherm WLW186i-12 E (Luft/Wasser) |
+| Gateway | Buderus MX400 (meldet sich als `K40RF_v1`), Firmware `15.00.01` |
+| Bedieneinheit | Logamatic BC400 (Systembus EMS 2.0) |
+
+Andere Geräte mit der *K 40 RF Local API* sollten ebenfalls funktionieren; Rückmeldungen dazu gern als Issue.
+
 ## Schnellstart (Docker Compose)
 
 Das Image wird bei jedem Push und Release nach `ghcr.io/patrickhofmann0/buderus-wp-to-mqtt` gepusht (siehe [Release & Deployment](#release--deployment)).
@@ -243,3 +258,9 @@ internal/app/                Poller: Werte abfragen und veröffentlichen
 - [authenticate.md](authenticate.md) – Access-Token vom Gateway holen
 - [energy.md](energy.md) – Energiezähler per `curl` abfragen
 - [buderus.yml](buderus.yml) – OpenAPI-Spezifikation der lokalen API
+
+## Lizenz
+
+Der Code dieses Projekts steht unter der [MIT-Lizenz](LICENSE.md).
+
+Ausnahme: [buderus.yml](buderus.yml) ist die OpenAPI-Spezifikation der *K 40 RF Local API* von **Bosch Thermotechnik GmbH** ([bosch-home-comfort/api-docs](https://github.com/bosch-home-comfort/api-docs)) und steht unter der [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). Details siehe [NOTICE](NOTICE).
