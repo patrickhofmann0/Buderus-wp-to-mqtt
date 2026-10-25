@@ -1,12 +1,31 @@
 services:
   buderus-wp-to-mqtt:
     image: ghcr.io/patrickhofmann0/buderus-wp-to-mqtt:latest
-    build: .
+    build: ./go
     env_file: .env
     restart: unless-stopped
     mem_limit: 32m
     cpus: 0.1
     read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  buderus-wp-to-mqtt-quarkus:
+    image: ghcr.io/patrickhofmann0/buderus-wp-to-mqtt-quarkus:latest
+    build: ./quarkus
+    profiles: [quarkus]
+    env_file: .env
+    environment:
+      MQTT_CLIENT_ID: buderus-wp-to-mqtt-quarkus
+      MQTT_TOPIC: buderus/wp-quarkus
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.1
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,uid=1001,gid=0,mode=1777
     cap_drop:
       - ALL
     security_opt:

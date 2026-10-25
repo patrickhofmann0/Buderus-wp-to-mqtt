@@ -1,4 +1,7 @@
 .env
 /buderus-wp-to-mqtt
+/go/buderus-wp-to-mqtt
+/quarkus/target/
 coverage*
 *.test
+*.log

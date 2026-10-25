@@ -2,7 +2,7 @@
 
 ## Projektzweck
 
-Der ressourcenschonende Container-Service fragt Daten einer Buderus-Wärmepumpe über REST ab, bildet die Antworten auf MQTT-Topics ab und sendet sie an einen Broker. Der Datenfluss lautet: ENV-Konfiguration → Zeitplanung → REST-Abruf → Mapping → MQTT-Veröffentlichung. Gerätespezifische API-Endpunkte werden konfiguriert, nicht automatisch erkannt.
+Zwei unabhängig baubare Container-Implementierungen fragen Daten einer Buderus-Wärmepumpe über REST ab, bilden die Antworten auf MQTT-Topics ab und senden sie an einen Broker: Go unter `go/` und Quarkus Native unter `quarkus/`. Sie stehen für spätere Funktions- und Ressourcenvergleiche nebeneinander; Quarkus ersetzt Go nicht. Der gemeinsame Datenfluss lautet: ENV-Konfiguration → Zeitplanung → REST-Abruf → Mapping → MQTT-Veröffentlichung. Gerätespezifische API-Endpunkte werden konfiguriert, nicht automatisch erkannt.
 
 ## Verbindliche Pflege dieser Datei
 
@@ -15,7 +15,7 @@ Keine zusätzlichen Markdown-Dateien für Pläne, Statusberichte oder redundante
 ## Sprache und Stil
 
 - README und Entwicklungsregeln auf Deutsch pflegen.
-- Go-Schnittstellen, Bezeichner, GoDoc, Fehlermeldungen und Code auf Englisch halten.
+- Go-/Java-Schnittstellen, Bezeichner, GoDoc/JavaDoc, Fehlermeldungen und Code auf Englisch halten.
 - Idiomatisches Go, kleine Funktionen, explizite Fehlerbehandlung und klare Paketgrenzen bevorzugen.
 - Nur erklärungsbedürftige Entscheidungen kommentieren; offensichtlichen Code nicht nacherzählen.
 - Änderungen auf die Aufgabe beschränken; keine beiläufigen Umstrukturierungen oder Reparaturen.
@@ -35,47 +35,56 @@ Keine zusätzlichen Markdown-Dateien für Pläne, Statusberichte oder redundante
 
 ## Technologie und Architektur
 
-- Auslieferung ausschließlich als Docker-Container über GHCR, nicht als Go-Bibliothek. Go-Version: **1.27.3**; der Modulpfad `github.com/patrickhofmann0/Buderus-wp-to-mqtt` ist eine technische Build-Voraussetzung.
-- `cmd/buderus-wp-to-mqtt/main.go` übernimmt Einstieg und Wiring. Die Laufzeit orchestriert Startabfrage, Cron, Signalbehandlung und geordnetes Beenden.
-- `config` lädt und validiert ausschließlich ENV-Konfiguration. Die Binärdatei enthält keinen `.env`-Loader.
-- `restclient` kapselt HTTP-GET, Authentifizierung, Timeouts, TLS und begrenztes Lesen.
-- `mapper` übersetzt Antwortbytes in `Message`-Werte. `Mapper`, `Func`, `JSONFields` und `Passthrough` bleiben unabhängig von Transport und Scheduler.
-- `mqttpub` kapselt Verbindung, Reconnect, Publish, Last Will und Verfügbarkeitsstatus.
+- Auslieferung beider Varianten ausschließlich als Docker-Container über GHCR, nicht als Bibliotheken. Go-Version: **1.27.3**; `go/go.mod` behält den Modulpfad `github.com/patrickhofmann0/Buderus-wp-to-mqtt` als technische Build-Voraussetzung.
+- `go/cmd/buderus-wp-to-mqtt/main.go` übernimmt Einstieg und Wiring. Die Laufzeit orchestriert Startabfrage, Cron, Signalbehandlung und geordnetes Beenden.
+- `go/config` lädt und validiert ausschließlich ENV-Konfiguration. Die Anwendungen enthalten keinen `.env`-Loader.
+- `go/restclient` kapselt HTTP-GET, Authentifizierung, Timeouts, TLS und begrenztes Lesen.
+- `go/mapper` übersetzt Antwortbytes in `Message`-Werte. `Mapper`, `Func`, `JSONFields` und `Passthrough` bleiben unabhängig von Transport und Scheduler.
+- `go/mqttpub` kapselt Verbindung, Reconnect, Publish, Last Will und Verfügbarkeitsstatus.
+- `go/Dockerfile`, `go/.dockerignore` und `go/.golangci.yml` gehören zum Go-Projekt; Go-Befehle im Verzeichnis `go/` ausführen. Keine zweite Kopie des Go-Moduls im Repository-Wurzelverzeichnis pflegen.
+- `quarkus/pom.xml`, `quarkus/src/` und `quarkus/Dockerfile` bilden das unabhängige Quarkus-Projekt. Java-Konfiguration, HTTP, Mapping, MQTT und Zeitplanung getrennt halten; native Laufzeit ohne JVM ausliefern.
+- Quarkus-Version **3.40.1**, Java-Release **21**, Maven-Projekt. Der native Docker-Build benötigt Mandrel **25** (`jdk-25`), nicht Mandrel 21; keine Go-Toolchain dafür voraussetzen. Quarkus läuft als Hintergrundanwendung ohne HTTP-Server.
+- Gemeinsame Nutzerkonfiguration und Deployment bleiben im Wurzelverzeichnis: `.env.example`, `docker-compose.yml`, `deploy/mosquitto.conf`, `README.md` und diese Datei. Keine konkurrierenden ENV-Vorlagen je Implementierung anlegen.
 - Verzeichnisse und Go-Pakete sind Implementierungsdetails ohne stabile unterstützte Library-API. Bestehende Paketpfade bleiben aus Gründen des Änderungsumfangs bestehen; weder externe Bibliotheksnutzer noch deren Kompatibilitätsanforderungen voraussetzen. Paketgrenzen dienen der internen Wartbarkeit und Testbarkeit, nicht einer Bibliotheksveröffentlichung.
 - Kein CLI-Wiring und keine impliziten Umgebungszugriffe in Transport- oder Mapping-Pakete verlagern.
 - HTTP und MQTT erhalten abbrechbare Kontexte beziehungsweise begrenzte Wartezeiten; keine unkontrollierten Hintergrund-Goroutinen.
 
 ## Konfigurationsvertrag
 
+- Der gemeinsame ENV-Vertrag gilt für beide Anwendungen. Tatsächliche Implementierungsunterschiede in der README offenlegen und testen; keine unbewiesene vollständige Verhaltens- oder Leistungsparität behaupten.
 - `API_URLS` hat nur bei nichtleerem Wert Vorrang vor `API_URL`. Ein leerer oder nicht gesetzter Wert fällt auf `API_URL` zurück.
 - Endpunktnamen sind eindeutig und entsprechen `[A-Za-z0-9_-]+`. Nur absolute HTTP(S)-URLs ohne eingebettete Zugangsdaten oder Fragment akzeptieren.
 - Bearer-Token und Basic Auth schließen sich gegenseitig aus. Authentifizierung, Timeout und Größenlimit gelten für alle Endpunkte.
 - Standardwerte: HTTP `15s`, Antwortlimit `1048576` Bytes; Broker `tcp://localhost:1883`, Client-ID `buderus-wp-to-mqtt`, Topic `buderus/wp`, QoS `0`, Retain `false`, MQTT-Timeout `5s`, Availability `true`.
+- Nur Compose überschreibt für den optionalen Quarkus-Service Client-ID mit `buderus-wp-to-mqtt-quarkus` und Topic mit `buderus/wp-quarkus`. Beide Anwendungsstandards bleiben gleich; parallele Instanzen benötigen unterschiedliche IDs und Topic-Präfixe.
 - `KeepAlive` ist eine interne MQTT-Konfiguration mit Standard `30s`, keine zusätzliche ENV-Variable. `AvailabilityTopic` ist ebenfalls Bestandteil der internen MQTT-Konfiguration.
 - Standardmapping `fields`, Standardplan `@every 60s`, Startabfrage `true`, Zeitzone `UTC`, Log-Level `info`, Log-Format `json`.
 - Dauerwerte müssen positiv sein; QoS ist `0` bis `2`. Log-Level: `debug/info/warn/error`; Log-Format: `json/text`.
+- `API_MAX_BODY_BYTES` ist positiv. Go verwendet einen `int64`-Grenzwert; Quarkus begrenzt wegen Byte-Arrays auf `2147483646`. Diese Abweichung dokumentieren; für Vergleichsläufe gemeinsame gültige Werte und ausreichende RAM-Limits wählen.
 - Keine versteckten Schalter, stillen Fallbacks bei ungültigen Werten oder unbeabsichtigten neuen ENV-Variablen hinzufügen.
 - `.env.example` muss sowohl mit Compose `env_file` als auch mit Docker `--env-file` funktionieren. Dauer-/Cron-Werte mit Leerzeichen nicht quoten, da Docker Quotes wörtlich übernimmt. Die Datei ist kein Shell-Skript; Shell-Exports müssen separat quotiert werden.
 
 ## REST- und Mapping-Invarianten
 
-- `restclient.New` und Optionen validieren Eingaben vor Netzwerkzugriffen. Optionen umfassen Timeout, maximale Body-Größe, Bearer, Basic Auth, Header, eigenen HTTP-Client und explizite unsichere TLS-Ausnahme.
-- `Fetch(ctx)` schließt Response-Bodies. Nicht-2xx liefert `*StatusError` mit Statuscode; Antwortdaten dürfen dabei nicht in Fehlermeldungen landen.
+- Die folgenden Daten- und Sicherheitsinvarianten gelten für beide Implementierungen; Go-spezifische Typen, Kontext- und Optionsschnittstellen gelten nur innerhalb von `go/`.
+- In Go validieren `restclient.New` und Optionen Eingaben vor Netzwerkzugriffen. Optionen umfassen Timeout, maximale Body-Größe, Bearer, Basic Auth, Header, eigenen HTTP-Client und explizite unsichere TLS-Ausnahme.
+- In Go schließt `Fetch(ctx)` Response-Bodies; Nicht-2xx liefert `*StatusError` mit Statuscode. Auch Quarkus muss HTTP-Ressourcen schließen und Statusfehler ohne Antwortdaten melden.
+- Bewusster HTTP-Unterschied: Go folgt der Standard-Redirect-Policy seines `http.Client`; Quarkus verwendet `Redirect.NEVER` und behandelt `3xx` als Statusfehler. Direkte endgültige API-URLs dokumentieren und in fairen Vergleichsläufen Redirects vermeiden.
 - Größenüberschreitung durch begrenztes Lesen mit einem zusätzlichen Prüfbyte erkennen. Niemals einen abgeschnittenen Body als erfolgreich behandeln.
 - JSONFields akzeptiert genau ein JSON-Objekt, sortiert Schlüssel rekursiv und flacht verschachtelte Objekte zu Topic-Pfaden ab.
-- Zahlenpräzision erhalten: `json.Number` statt implizitem `float64`. Strings roh, Arrays als JSON, `null` als Text `null` übertragen.
+- Zahlenpräzision erhalten: in Go `json.Number` statt implizitem `float64`, in Java keine verlustbehaftete Umwandlung in `double`. Strings roh, Arrays als JSON, `null` als Text `null` übertragen.
 - `/`, `+`, `#`, Leerzeichen und NUL in Schlüsseln durch `_` ersetzen, leere Schlüssel durch `_`. Topic-Kollisionen müssen das Mapping als Ganzes ablehnen.
 - Passthrough veröffentlicht unveränderte Antwortbytes. Nachrichten tragen ihr eigenes Retain-Flag.
 - Einzelendpunkt: `MQTT_TOPIC[/feld]`; mehrere Endpunkte: `MQTT_TOPIC/name[/feld]`.
-- `MQTT_TOPIC/status` ist bei aktiver Availability reserviert. Die Anwendung lehnt Mapping-Ergebnisse mit einer Nachricht auf exakt `MQTT.AvailabilityTopic` vor der Veröffentlichung ab; der Publisher weist Datenmeldungen auf sein `AvailabilityTopic` ebenfalls ab. Daten dürfen den Verfügbarkeitsstatus nicht überschreiben.
+- `MQTT_TOPIC/status` ist bei aktiver Availability reserviert. Beide Anwendungen lehnen Mapping-Ergebnisse auf exakt diesem Topic vor der Veröffentlichung ab; auch der Publisher schützt das Status-Topic. In Go ist es als `MQTT.AvailabilityTopic` beziehungsweise `AvailabilityTopic` repräsentiert. Daten dürfen den Verfügbarkeitsstatus nicht überschreiben.
 
 ## Laufzeit und Betrieb
 
 - Fünffeldrige Cron-Ausdrücke ohne Sekundenfeld und Standarddeskriptoren unterstützen; Intervalle müssen positiv sein.
 - Überlappende Durchläufe überspringen, nicht parallel starten oder unbegrenzt nachholen. Startabfrage und Scheduler müssen denselben Ausschluss beachten.
-- IANA-Zeitzonendaten mit `time/tzdata` einbetten, damit das minimale Image keine externe Zonen-Datenbank benötigt.
+- Go bettet IANA-Zeitzonendaten mit `time/tzdata` ein, damit das minimale Image keine externe Zonen-Datenbank benötigt. Auch der native Quarkus-Build muss die unterstützten IANA-Zonen zur Laufzeit bereitstellen.
 - SIGINT/SIGTERM muss laufende Arbeit kontrolliert beenden und MQTT sauber schließen.
-- `slog` auf stdout, strukturiertes JSON standardmäßig, optional Text. Fehler mit Kontext protokollieren, ohne Geheimnisse preiszugeben.
+- Go verwendet `slog` auf stdout; beide Anwendungen liefern strukturiertes JSON standardmäßig, optional Text. Fehler mit Kontext protokollieren, ohne Geheimnisse preiszugeben.
 - Availability veröffentlicht retained `online` bei Verbindung und Reconnect; geordnetes Beenden und Last Will liefern retained `offline`.
 - Für `online`, `offline` und Last Will gilt QoS `min(Daten-QoS, 1)`; Daten behalten die konfigurierte QoS `0/1/2`. Status-Replay muss eine vollständige PUBLISH-Meldung bleiben: Ein wiederholtes QoS-2-PUBREL kann den nach Last Will gespeicherten `offline`-Status nicht durch `online` ersetzen.
 - Daten-Publish nur bei offener MQTT-Verbindung zulassen, nicht während Reconnect. Höchstens eine Datenmeldung darf gleichzeitig eingereiht beziehungsweise unbestätigt sein, einschließlich eines nach Kontextabbruch noch laufenden Enqueue-Vorgangs; weitere Publikationen bei ausstehender Zustellung mit `ErrPending` abweisen, keine unbegrenzte Offline-Warteschlange aufbauen.
@@ -101,27 +110,36 @@ Keine zusätzlichen Markdown-Dateien für Pläne, Statusberichte oder redundante
 - Erfolgsfälle und Fehlerpfade abdecken: ungültige ENV, Auth-Konflikte, StatusError, Body-Limit, Abbruch, Präzision, Sortierung, Sanitisierung, Kollisionen, Publish-Fehler, Reconnect und Shutdown.
 - Vor Code-PRs vorhandene Prüfungen berücksichtigen:
   ```sh
+  cd go
   go build ./...
   go vet ./...
   go test ./... -race -cover
   golangci-lint run
   govulncheck ./...
   ```
+- Quarkus separat vom Repository-Wurzelverzeichnis mit `mvn -f quarkus/pom.xml verify` prüfen. Der native Docker-Build ist eine eigene Prüfung: `docker build -t buderus-wp-to-mqtt-quarkus -f quarkus/Dockerfile quarkus`. JVM-Tests nicht als Nachweis nativer Ausführbarkeit ausgeben.
+- `quarkus/src/test/container/smoke.py` unterstützt den gepackten JVM-Prozess mit `--jar quarkus/target/quarkus-app/quarkus-run.jar` und den nativen Container mit `--image IMAGE`, jeweils zusätzlich `--tls` für lokale HTTPS-/MQTT-TLS-Gegenstellen. Beide Laufzeitformen getrennt validieren; erfolgreiche JVM-Smokes ersetzen keine nativen Smokes.
 - `gofmt` und `goimports` für Go-Code verwenden. `go mod tidy` bei Abhängigkeitsänderungen; `go.mod` und `go.sum` gemeinsam prüfen.
 - Keine Abhängigkeiten installieren, solange weder Manifeständerung noch ein fehlendes Werkzeug die Installation erfordert.
 - Dokumentationsänderungen allein benötigen keine Tests oder Builds. Nicht ausgeführte Prüfungen und tatsächliche Einschränkungen ehrlich benennen.
 
 ## Docker und Deployment
 
-- Statischer Build, Laufzeit auf `scratch`, CA-Zertifikate verfügbar, Non-root UID/GID `65534`. Keine Shell oder Healthcheck-Binärdatei im Image voraussetzen.
-- Compose-Service `buderus-wp-to-mqtt`: Image `ghcr.io/patrickhofmann0/buderus-wp-to-mqtt:latest`, `build: .`, `env_file: .env`, `restart: unless-stopped`, 32 MB RAM, 0,1 CPU, schreibgeschütztes Dateisystem.
+- Go: statischer Build über `go/Dockerfile`, Laufzeit auf `scratch`, CA-Zertifikate verfügbar, Non-root UID/GID `65534`. Keine Shell oder Healthcheck-Binärdatei im Image voraussetzen.
+- Compose-Service `buderus-wp-to-mqtt`: Image `ghcr.io/patrickhofmann0/buderus-wp-to-mqtt:latest`, `build: ./go`, `env_file: .env`, `restart: unless-stopped`, 32 MB RAM, 0,1 CPU, schreibgeschütztes Dateisystem.
+- Quarkus: nativer Multistage-Build mit Mandrel **25** (`quay.io/quarkus/ubi9-quarkus-mandrel-builder-image:jdk-25`), Java-Quellcode-Release **21** und eigenem Build-Kontext `quarkus/`. Laufzeit auf `quay.io/quarkus/ubi9-quarkus-micro-image:2.0`, Non-root UID `1001`, ohne JVM. Builder und Laufzeit müssen UBI-9-glibc-kompatibel bleiben; nicht mit dem älteren Micro-Image ohne `ubi9` austauschen. Keine Go-Dateien dafür voraussetzen. Native Kompilierung benötigt mehr Ressourcen als die Laufzeit; keine 32-MB-Zusage ableiten.
+- Optionaler Compose-Service `buderus-wp-to-mqtt-quarkus` nur im Profil `quarkus`: Image `ghcr.io/patrickhofmann0/buderus-wp-to-mqtt-quarkus:latest`, `build: ./quarkus`, gemeinsame `.env`, schreibgeschütztes Dateisystem, zunächst 128 MB RAM und 0,1 CPU. Flüchtiges `/tmp` nur als begrenztes `tmpfs`: `size=16m,uid=1001,gid=0,mode=1777`; dessen Speicher zählt zum RAM-Limit.
+- Quarkus-Image-Veröffentlichung zunächst nur für `linux/amd64`; Go bleibt multiarch. ARM erfordert einen nativen Quarkus-Neubau auf einem entsprechenden Build-Host. Keine unbelegte ARM-Image-Verfügbarkeit oder architekturübergreifende Vergleichbarkeit versprechen.
 - Optionale Mosquitto-Instanz nur im Profil `dev`; `deploy/mosquitto.conf` einbinden, Host-Port 1883 nur an Loopback veröffentlichen. Anonymer Zugriff ist ausschließlich für lokale Entwicklung.
 - Im Container bezeichnet `localhost` nicht den Host. Der Dev-Broker wird mit `MQTT_BROKER=tcp://mosquitto:1883` angesprochen.
 - Größen- und RAM-Angaben sind Schätzungen, keine Zusagen. Architektur, Versionen, TLS und große Antworten berücksichtigen.
+- Kein Benchmark-Harness und keine gemessene Überlegenheit behaupten. Für faire Ressourcen-/Startzeitvergleiche nur eine Variante gleichzeitig mit identischen Eingaben, MQTT-Einstellungen und angeglichenen Limits betreiben; Image-Größe, Startzeit und Laufzeitressourcen getrennt erfassen. Parallelvergleiche benötigen getrennte Client-IDs und Topic-Präfixe.
 
 ## Änderungen, CI und Reviews
 
 - Die bestehende CI unter `.github/workflows/ci.yml` und vorhandene Release-/Containerabläufe respektieren.
+- Go-Jobs verwenden `go/` als Arbeitsverzeichnis und `go/` als Docker-Build-Kontext; Quarkus-Jobs prüfen das separate Maven-Projekt und bauen aus `quarkus/`. Die bestehenden Go-Prüfungen nicht durch reine Java-Prüfungen ersetzen.
+- Quarkus-CI nutzt Java 21 für `mvn verify`, prüft danach den gepackten JVM-Prozess mit `smoke.py --jar` ohne und mit `--tls`, baut und lädt das native Image als `buderus-wp-to-mqtt-quarkus:ci` und prüft es mit `smoke.py --image` ebenfalls ohne und mit `--tls`. Image-Smokes dürfen keine lokale Native-Toolchain oder ein Host-`JAVA_HOME` voraussetzen. Ubuntu-Runner stellen Python 3, OpenSSL und Docker bereit. GHCR-Veröffentlichung des Quarkus-Images zunächst für `linux/amd64`, unabhängig vom bestehenden Go-Multiarch-Build.
 - Prüfwerkzeuge mit derselben Go-Toolchain wie den Service bauen. Die CI installiert golangci-lint aus Quellcode und nutzt nach `setup-go` `GOTOOLCHAIN=local`, damit ein älter gebautes Werkzeug die aktuelle Go-Version nicht ablehnt.
 - Neue Konfiguration, Schnittstellen oder geändertes Fehlerverhalten mit passenden Tests und aktualisierter Dokumentation liefern.
 - Keine Geheimnisse oder generierten Binärdateien einchecken. Diffs vor dem Commit auf unbeabsichtigte Änderungen prüfen.
