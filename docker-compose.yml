@@ -1,0 +1,22 @@
+services:
+  buderus-wp-to-mqtt:
+    image: ghcr.io/patrickhofmann0/buderus-wp-to-mqtt:latest
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    mem_limit: 32m
+    cpus: 0.1
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    profiles: [dev]
+    ports:
+      - "127.0.0.1:1883:1883"
+    volumes:
+      - ./deploy/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    restart: unless-stopped
