@@ -1,6 +1,6 @@
 # Buderus-wp-to-mqtt
 
-Ein schlanker Dienst, der die Energiezähler einer Buderus-Wärmepumpe über die lokale REST-API des Gateways (z. B. **MX400**, **K 40 RF**) abfragt und per **MQTT** veröffentlicht. Optional legt er die Sensoren per **Home-Assistant-MQTT-Discovery** automatisch an.
+Ein Dienst, der die Energiezähler einer Buderus-Wärmepumpe über die lokale REST-API des Gateways (z. B. **MX400**, **K 40 RF**) abfragt und per **MQTT** veröffentlicht. Optional legt er die Sensoren per **Home-Assistant-MQTT-Discovery** automatisch an.
 
 Aktuell werden abgefragt:
 
