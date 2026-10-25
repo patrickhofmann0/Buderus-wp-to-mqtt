@@ -15,7 +15,7 @@ Zwei nebeneinander gepflegte Container-Implementierungen fragen die REST-API ein
 - MQTT-Reconnect, retained Verfügbarkeitsstatus und Last Will.
 - JSON- oder Text-Logs auf stdout; Go verwendet `slog` und eingebettete Zeitzonendaten.
 - Go: statisches Docker-Image auf `scratch`, CA-Zertifikate, Ausführung als UID/GID `65534`.
-- Quarkus: Java-21-Quellcode, nativer Build mit Mandrel **25**, glibc-basiertes UBI-9-Quarkus-Micro-Image `2.0`, Ausführung als UID `1001`, ohne JVM und ohne HTTP-Server.
+- Quarkus: Java-21-Quellcode, nativer Build mit Mandrel **25**, glibc-basiertes UBI-9-Quarkus-Micro-Image `2.0`, Ausführung als UID/GID `65534:65534`, ohne JVM und ohne HTTP-Server.
 
 ```mermaid
 flowchart LR
@@ -72,7 +72,7 @@ Das Quarkus-Image wird zunächst ausschließlich für **`linux/amd64`** veröffe
 
 Für Quarkus sind zunächst 128 MB RAM und 0,1 CPU vorgesehen, für Go weiterhin 32 MB und 0,1 CPU. Das sind konfigurierbare Startlimits, **keine gemessenen Mindestwerte oder Leistungszusagen**. Der native Build benötigt deutlich mehr Ressourcen als der laufende Container.
 
-Das Quarkus-Dateisystem ist ebenfalls schreibgeschützt; Compose stellt lediglich `/tmp` als flüchtiges, auf 16 MB begrenztes `tmpfs` mit UID `1001`, GID `0` und Modus `1777` bereit. Dieser Speicher zählt zum Container-RAM und ist kein persistenter Datenspeicher.
+Das Quarkus-Dateisystem ist ebenfalls schreibgeschützt; Compose stellt lediglich `/tmp` als flüchtiges, auf 16 MB begrenztes `tmpfs` mit UID/GID `65534:65534` und Modus `1777` bereit. Dieser Speicher zählt zum Container-RAM und ist kein persistenter Datenspeicher.
 
 Go ohne Compose:
 
@@ -192,6 +192,8 @@ Schlüssel werden auf jeder Objektebene sortiert und rekursiv zu Topic-Pfaden ab
 
 In Schlüsseln werden `/`, `+`, `#`, Leerzeichen und NUL durch `_` ersetzt; ein leerer Schlüssel wird `_`. Entstehen dadurch identische Topic-Pfade, schlägt das gesamte Mapping fehl, statt Werte stillschweigend zu überschreiben.
 
+Die JSON-Parser haben unterschiedliche Verschachtelungsgrenzen: Quarkus/Jackson standardmäßig 1000, Go 10000 Ebenen. Extrem tief verschachtelte oder fehlerhafte Unicode-Eingaben sind daher kein Nachweis bytegleicher Parser-Parität; für Vergleiche gültiges UTF-8-JSON innerhalb beider Grenzen verwenden.
+
 `MAPPING=passthrough` überträgt die vollständigen Antwortbytes unverändert als einzelne Meldung auf dem jeweiligen Basis-Topic; eine JSON-Antwort ist dann nicht erforderlich.
 
 **Reserviertes Topic:** Bei aktiver Verfügbarkeitsmeldung ist `MQTT_TOPIC/status` für `online`/`offline` reserviert. Erzeugt das Mapping eine Meldung auf genau diesem Topic, lehnt die Anwendung das Mapping-Ergebnis ab, statt den Status zu überschreiben. Das betrifft beispielsweise ein JSON-Feld `status` beim Einzelendpunkt oder Passthrough für einen Mehrfachendpunkt namens `status`. Dafür andere Namen verwenden oder `MQTT_AVAILABILITY=false` setzen.
@@ -203,7 +205,7 @@ In Schlüsseln werden `/`, `+`, `#`, Leerzeichen und NUL durch `_` ersetzt; ein 
 - MQTT-Verbindungen werden automatisch wiederhergestellt. Bei Verbindung beziehungsweise Reconnect wird retained `online` veröffentlicht; beim geordneten Beenden `offline`. Bei Verbindungsverlust übernimmt der Broker das retained Last Will `offline`.
 - Datenmeldungen verwenden `MQTT_QOS`. Verfügbarkeitsmeldungen einschließlich Last Will verwenden höchstens QoS 1, also `min(MQTT_QOS, 1)`, damit ein Status nach Reconnect erneut als vollständige Meldung übertragen werden kann.
 - Ohne offene Broker-Verbindung, auch während eines Reconnects, werden Datenveröffentlichungen abgewiesen. Höchstens eine Datenmeldung darf gleichzeitig in der Warteschlange beziehungsweise unbestätigt sein; es gibt keine unbegrenzte Offline-Warteschlange. Bleibt sie ausstehend, schlagen weitere Veröffentlichungen fehl, statt immer mehr Speicher zu belegen.
-- Ein MQTT-Timeout oder Kontextabbruch beendet das Warten, kann eine bereits übergebene Meldung aber nicht zurückrufen: Sie kann später noch beim Broker eintreffen. Bis zur tatsächlichen Bestätigung werden weitere Datenmeldungen mit einem Pending-Fehler abgewiesen. Spätere Abfragerunden können daher fehlschlagen, statt sich anzusammeln. Availability verwendet einen separaten begrenzten Kanal; `offline` beim Beenden wird bestmöglich innerhalb des Shutdown-Zeitlimits übertragen.
+- Ein MQTT-Timeout oder Kontextabbruch beendet das Warten, kann eine bereits übergebene Meldung aber nicht zurückrufen: Sie kann später noch beim Broker eintreffen. Bis zum tatsächlichen Abschluss werden weitere Datenmeldungen mit einem Pending-Fehler abgewiesen; bei QoS 1/2 ist dafür die Broker-Bestätigung erforderlich. QoS 0 besitzt keine Broker-Bestätigung; ein definitiv fehlgeschlagener oder verworfener Sendevorgang darf die Sperre nicht dauerhaft halten. Spätere Abfragerunden können bei weiterhin ausstehender Zustellung fehlschlagen, statt sich anzusammeln. Availability verwendet einen separaten begrenzten Kanal; `offline` beim Beenden wird bestmöglich innerhalb des Shutdown-Zeitlimits übertragen.
 - SIGINT/SIGTERM beendet die Anwendung geordnet. Logs gehen ausschließlich auf stdout; Aufbewahrung und Rotation übernimmt die Laufzeitumgebung.
 - `online` bestätigt die Broker-Verbindung, **nicht** erfolgreiche oder aktuelle REST-Abfragen. Es gibt keinen Health-Flag und keinen eingebauten Healthcheck-Endpunkt: Eine reine Konfigurationsprüfung wäre kein echter Laufzeitcheck. Ohne Heartbeat beziehungsweise persistenten Erfolgszustand wäre ein separater Prozess ebenfalls kein verlässlicher Zustandsprüfer. Prozessende, Container-Restart-Policy, Brokerstatus und extern überwachte Datenaktualität nutzen.
 - `.env` enthält möglicherweise Geheimnisse: nicht committen und Zugriffsrechte beschränken. Token, Passwörter und vollständige sensible Antworten gehören nicht in Logs.
@@ -256,7 +258,7 @@ docker build -t ghcr.io/patrickhofmann0/buderus-wp-to-mqtt:latest go
 
 ### Quarkus Native
 
-Für lokale JVM-Prüfungen werden JDK **21** und Maven benötigt. Das Projekt verwendet Quarkus **3.40.1** mit Java-Release **21**. Der native Container-Build benötigt dafür Mandrel **25** (`quay.io/quarkus/ubi9-quarkus-mandrel-builder-image:jdk-25`), nicht Mandrel 21. Zur Laufzeit verwendet er `quay.io/quarkus/ubi9-quarkus-micro-image:2.0` als Benutzer `1001`; die UBI-9-glibc muss zum nativen Build passen. Es ist kein `scratch`-Image und benötigt keine JVM im Laufzeitcontainer.
+Für lokale JVM-Prüfungen werden JDK **21** und Maven benötigt. Das Projekt verwendet Quarkus **3.40.1** mit Java-Release **21**. Der native Container-Build benötigt dafür Mandrel **25** (`quay.io/quarkus/ubi9-quarkus-mandrel-builder-image:jdk-25`), nicht Mandrel 21. Zur Laufzeit verwendet er `quay.io/quarkus/ubi9-quarkus-micro-image:2.0` mit UID/GID `65534:65534`; die UBI-9-glibc muss zum nativen Build passen. Es ist kein `scratch`-Image und benötigt keine JVM im Laufzeitcontainer.
 
 ```sh
 mvn -f quarkus/pom.xml verify
@@ -265,6 +267,18 @@ docker build -t ghcr.io/patrickhofmann0/buderus-wp-to-mqtt-quarkus:latest \
 ```
 
 `mvn verify` prüft das Java-Projekt; der Docker-Multistage-Build erzeugt separat die native ausführbare Datei. Ein erfolgreicher JVM-Testlauf ist kein Nachweis eines erfolgreichen nativen Builds. Ein lokaler GraalVM-/Mandrel-Compiler ist für den Docker-Build nicht erforderlich.
+
+Alternativ lässt sich mit JDK 21 und Docker zunächst über den Maven-Wrapper ein natives Artefakt erzeugen und anschließend nur das Laufzeitimage bauen:
+
+```sh
+(cd quarkus && ./mvnw package -Dnative \
+  -Dquarkus.native.container-build=true \
+  -Dquarkus.native.builder-image=quay.io/quarkus/ubi9-quarkus-mandrel-builder-image:jdk-25)
+docker build -f quarkus/Dockerfile.native \
+  -t ghcr.io/patrickhofmann0/buderus-wp-to-mqtt-quarkus:latest quarkus
+```
+
+`Dockerfile.native` setzt das zuvor erzeugte native Artefakt in `quarkus/target/` voraus; es kompiliert nicht selbst. Auch dieser Weg benötigt Zugriff auf Maven- und Container-Repositories.
 
 Der lokale Smoke-Test benötigt Python 3, für `--tls` zusätzlich OpenSSL und für `--image` Docker. Er prüft REST-Abfragen und MQTT mit kontrollierten Testgegenstellen, optional mit TLS. Nach dem Maven-Build beziehungsweise einem erfolgreichen nativen Image-Build:
 
@@ -294,6 +308,7 @@ quarkus/
   pom.xml                     Eigenständiges Maven-/Quarkus-Projekt
   src/                        Java-Implementierung und Tests
   Dockerfile                  Nativer Container-Build
+  Dockerfile.native           Laufzeitimage für vorhandenes Native-Artefakt
 deploy/mosquitto.conf          Lokaler Entwicklungsbroker
 docker-compose.yml            Go-Standardservice, Profile quarkus und dev
 .env.example                  Vollständige Konfigurationsvorlage

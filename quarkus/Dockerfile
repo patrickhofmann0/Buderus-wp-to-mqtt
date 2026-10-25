@@ -7,6 +7,6 @@ RUN ./mvnw -B -ntp package -Dnative -DskipTests -Dquarkus.native.native-image-xm
 
 FROM quay.io/quarkus/ubi9-quarkus-micro-image:2.0@sha256:aa84cf7f06096050253e740b2b6e679044c268c4db7971483777f1c61a501190
 WORKDIR /work
-COPY --from=build --chown=1001:0 /project/target/*-runner /work/application
-USER 1001
+COPY --from=build --chown=65534:65534 /project/target/*-runner /work/application
+USER 65534:65534
 ENTRYPOINT ["/work/application"]

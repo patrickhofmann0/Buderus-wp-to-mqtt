@@ -14,16 +14,18 @@ public class Main implements QuarkusApplication {
 
     @Override
     public int run(String... args) {
+        Events events = new Events("info", "json");
         try {
             Settings settings = Settings.load(System.getenv());
+            events = new Events(settings.logLevel(), settings.logFormat());
             bridge.start(settings);
             Quarkus.waitForExit();
             return 0;
         } catch (IllegalArgumentException e) {
-            new Events("info", "json").log("error", "configuration rejected");
+            events.log("error", "configuration rejected");
             return 1;
         } catch (Exception e) {
-            new Events("info", "json").log("error", "service startup failed");
+            events.log("error", "service startup failed");
             return 1;
         } finally {
             bridge.close();

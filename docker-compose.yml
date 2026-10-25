@@ -25,7 +25,7 @@ services:
     cpus: 0.1
     read_only: true
     tmpfs:
-      - /tmp:size=16m,uid=1001,gid=0,mode=1777
+      - /tmp:size=16m,uid=65534,gid=65534,mode=1777
     cap_drop:
       - ALL
     security_opt:

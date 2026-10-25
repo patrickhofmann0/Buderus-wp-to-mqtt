@@ -3,6 +3,10 @@ package de.buderus.bridge;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.eclipse.paho.client.mqttv3.IMqttActionListener;
@@ -20,21 +24,25 @@ import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
         "org.eclipse.paho.client.mqttv3.internal.SSLNetworkModuleFactory",
         "org.eclipse.paho.client.mqttv3.internal.websocket.WebSocketNetworkModuleFactory",
         "org.eclipse.paho.client.mqttv3.internal.websocket.WebSocketSecureNetworkModuleFactory",
-        "org.eclipse.paho.client.mqttv3.logging.JSR47Logger",
-        "org.eclipse.paho.client.mqttv3.internal.nls.logcat"})
+        "org.eclipse.paho.client.mqttv3.logging.JSR47Logger"})
 final class MqttSink implements AutoCloseable {
     private final Settings config;
     private final Events events;
     private final MqttAsyncClient client;
-    private final AtomicReference<Object> dataPending = new AtomicReference<>();
-    private final AtomicReference<Object> statusPending = new AtomicReference<>();
+    private final AtomicReference<Pending> dataPending = new AtomicReference<>();
+    private final AtomicReference<Pending> statusPending = new AtomicReference<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Object lifecycle = new Object();
 
     MqttSink(Settings config, Events events) throws MqttException {
+        this(config, events, new MqttAsyncClient(normalizeBroker(config.broker()), config.clientId(),
+                new MemoryPersistence()));
+    }
+
+    MqttSink(Settings config, Events events, MqttAsyncClient client) {
         this.config = config;
         this.events = events;
-        client = new MqttAsyncClient(normalizeBroker(config.broker()), config.clientId(), new MemoryPersistence());
+        this.client = client;
         client.setCallback(new MqttCallbackExtended() {
             @Override public void connectComplete(boolean reconnect, String serverURI) {
                 synchronized (lifecycle) {
@@ -45,6 +53,13 @@ final class MqttSink implements AutoCloseable {
                 events.log("info", reconnect ? "mqtt reconnected" : "mqtt connected");
             }
             @Override public void connectionLost(Throwable cause) {
+                synchronized (lifecycle) {
+                    // Paho discards ordinary QoS0 messages before this callback; no ACK will follow.
+                    if (config.qos() == 0) {
+                        discard(dataPending);
+                        discard(statusPending);
+                    }
+                }
                 events.log("warn", "mqtt disconnected; reconnect pending");
             }
             @Override public void messageArrived(String topic, MqttMessage message) {}
@@ -77,34 +92,40 @@ final class MqttSink implements AutoCloseable {
         if (message.topic().equals(config.availabilityTopic())) {
             throw new IllegalArgumentException("mapped topic conflicts with mqtt availability topic");
         }
-        if (closed.get() || !client.isConnected()) {
-            throw new IllegalStateException("mqtt is disconnected");
-        }
         if (Thread.currentThread().isInterrupted()) {
             throw new InterruptedException();
         }
-        Object marker = new Object();
-        if (!dataPending.compareAndSet(null, marker)) {
-            throw new IllegalStateException("mqtt publication is still pending");
+        Pending marker = new Pending();
+        synchronized (lifecycle) {
+            if (closed.get() || !client.isConnected()) {
+                throw new IllegalStateException("mqtt is disconnected");
+            }
+            if (!dataPending.compareAndSet(null, marker)) {
+                throw new IllegalStateException("mqtt publication is still pending");
+            }
+            try {
+                client.publish(message.topic(), message.payload(), config.qos(), message.retain(),
+                        marker, completion(dataPending, marker));
+            } catch (MqttException | RuntimeException e) {
+                dataPending.compareAndSet(marker, null);
+                throw e;
+            }
         }
-        IMqttDeliveryToken token;
+        // Do not wait on Paho's token: an interrupted token wait mutates its delivery error state.
         try {
-            token = client.publish(message.topic(), message.payload(), config.qos(), message.retain(),
-                    marker, completion(dataPending, marker));
-        } catch (MqttException | RuntimeException e) {
-            dataPending.compareAndSet(marker, null);
-            throw e;
+            marker.delivered.get(config.mqttTimeout().toNanos(), TimeUnit.NANOSECONDS);
+        } catch (TimeoutException e) {
+            throw new MqttException(MqttException.REASON_CODE_CLIENT_TIMEOUT);
+        } catch (ExecutionException e) {
+            throw new MqttException(e.getCause());
         }
-        // A timed-out wait never opens the gate; only confirmed delivery does.
-        await(token);
-        dataPending.compareAndSet(marker, null);
     }
 
     private void online() {
         if (!config.availability()) {
             return;
         }
-        Object marker = new Object();
+        Pending marker = new Pending();
         if (!statusPending.compareAndSet(null, marker)) {
             return;
         }
@@ -117,61 +138,58 @@ final class MqttSink implements AutoCloseable {
         }
     }
 
-    private IMqttActionListener completion(AtomicReference<Object> pending, Object marker) {
+    private static final class Pending {
+        private final CompletableFuture<Void> delivered = new CompletableFuture<>();
+    }
+
+    private static void discard(AtomicReference<Pending> pending) {
+        Pending marker = pending.getAndSet(null);
+        if (marker != null) {
+            marker.delivered.completeExceptionally(new MqttException(MqttException.REASON_CODE_CLIENT_NOT_CONNECTED));
+        }
+    }
+
+    private IMqttActionListener completion(AtomicReference<Pending> pending, Pending marker) {
         return new IMqttActionListener() {
             @Override public void onSuccess(IMqttToken token) {
                 pending.compareAndSet(marker, null);
+                marker.delivered.complete(null);
             }
             @Override public void onFailure(IMqttToken token, Throwable cause) {
                 // A lost connection can fail waiting tokens while persistence still holds the PUBLISH.
                 events.log("warn", "mqtt delivery remains pending");
+                marker.delivered.completeExceptionally(cause);
             }
         };
     }
 
-    private void await(IMqttToken token) throws MqttException, InterruptedException {
-        long deadline = System.nanoTime() + config.mqttTimeout().toNanos();
-        while (!token.isComplete()) {
-            if (Thread.currentThread().isInterrupted()) {
-                throw new InterruptedException();
-            }
-            long remaining = deadline - System.nanoTime();
-            if (remaining <= 0) {
-                throw new MqttException(MqttException.REASON_CODE_CLIENT_TIMEOUT);
-            }
-            try {
-                token.waitForCompletion(Math.max(1, Math.min(100, remaining / 1_000_000)));
-            } catch (MqttException e) {
-                if (e.getReasonCode() != MqttException.REASON_CODE_CLIENT_TIMEOUT) {
-                    throw e;
-                }
-            }
-        }
-        if (token.getException() != null) {
-            throw token.getException();
-        }
-    }
-
     @Override
     public void close() {
+        IMqttToken offline = null;
         synchronized (lifecycle) {
             if (!closed.compareAndSet(false, true)) {
                 return;
             }
             try {
                 if (client.isConnected() && config.availability()) {
-                    client.publish(config.availabilityTopic(), bytes("offline"), Math.min(config.qos(), 1), true)
-                            .waitForCompletion(timeoutMillis());
+                    offline = client.publish(config.availabilityTopic(), bytes("offline"), Math.min(config.qos(), 1), true);
                 }
             } catch (MqttException e) {
                 events.log("warn", "mqtt offline publication failed");
-            } finally {
-                try {
-                    client.disconnectForcibly(0, timeoutMillis(), true);
-                    client.close(true);
-                } catch (MqttException e) {
-                    events.log("warn", "mqtt close failed");
-                }
+            }
+        }
+        try {
+            if (offline != null) {
+                offline.waitForCompletion(timeoutMillis());
+            }
+        } catch (MqttException e) {
+            events.log("warn", "mqtt offline publication failed");
+        } finally {
+            try {
+                client.disconnectForcibly(0, timeoutMillis(), true);
+                client.close(true);
+            } catch (MqttException e) {
+                events.log("warn", "mqtt close failed");
             }
         }
     }

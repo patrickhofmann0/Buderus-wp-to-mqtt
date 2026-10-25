@@ -46,6 +46,7 @@ class Broker:
         self.listener = socket.socket()
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen()
+        self.listener.settimeout(0.5)
         self.port = self.listener.getsockname()[1]
         self.context = context
         self.messages = []
@@ -116,6 +117,7 @@ class Broker:
     def close(self):
         self.closed = True
         self.listener.close()
+        self.acceptor.join(2)
         for peer in self.peers:
             try:
                 peer.shutdown(socket.SHUT_RDWR)

@@ -97,6 +97,9 @@ class MqttSinkTest {
             assertThrows(IllegalStateException.class, () -> sink.publish(message("must not queue")));
             broker.ack(broker.messages.stream().filter(p -> p.payload().equals("interrupted"))
                     .findFirst().orElseThrow());
+            broker.acknowledge.set(true);
+            Thread.sleep(100);
+            sink.publish(message("after interrupted delivery"));
         }
     }
 
