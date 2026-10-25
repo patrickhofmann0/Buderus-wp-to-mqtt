@@ -5,6 +5,8 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -33,6 +35,12 @@ final class MqttSink implements AutoCloseable {
     private final AtomicReference<Pending> statusPending = new AtomicReference<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Object lifecycle = new Object();
+    private final ScheduledThreadPoolExecutor reconnect = new ScheduledThreadPoolExecutor(1,
+            task -> new Thread(task, "buderus-mqtt-reconnect"));
+    private ScheduledFuture<?> reconnectTask;
+    private boolean reconnectPending;
+    private boolean connectedBefore;
+    private long reconnectDelayMillis = 1000;
 
     MqttSink(Settings config, Events events) throws MqttException {
         this(config, events, new MqttAsyncClient(normalizeBroker(config.broker()), config.clientId(),
@@ -43,14 +51,26 @@ final class MqttSink implements AutoCloseable {
         this.config = config;
         this.events = events;
         this.client = client;
+        reconnect.setRemoveOnCancelPolicy(true);
         client.setCallback(new MqttCallbackExtended() {
             @Override public void connectComplete(boolean reconnect, String serverURI) {
                 synchronized (lifecycle) {
-                    if (!closed.get()) {
-                        online();
+                    reconnectPending = false;
+                    if (reconnectTask != null) {
+                        reconnectTask.cancel(false);
                     }
+                    if (closed.get()) {
+                        return;
+                    }
+                    if (!client.isConnected()) {
+                        scheduleReconnect();
+                        return;
+                    }
+                    reconnectDelayMillis = 1000;
+                    events.log("info", connectedBefore ? "mqtt reconnected" : "mqtt connected");
+                    connectedBefore = true;
+                    online();
                 }
-                events.log("info", reconnect ? "mqtt reconnected" : "mqtt connected");
             }
             @Override public void connectionLost(Throwable cause) {
                 synchronized (lifecycle) {
@@ -59,6 +79,7 @@ final class MqttSink implements AutoCloseable {
                         discard(dataPending);
                         discard(statusPending);
                     }
+                    scheduleReconnect();
                 }
                 events.log("warn", "mqtt disconnected; reconnect pending");
             }
@@ -68,8 +89,13 @@ final class MqttSink implements AutoCloseable {
     }
 
     void connect() throws MqttException {
+        client.connect(connectionOptions()).waitForCompletion(timeoutMillis());
+    }
+
+    private MqttConnectOptions connectionOptions() {
         MqttConnectOptions options = new MqttConnectOptions();
-        options.setAutomaticReconnect(true);
+        // Own reconnect scheduling: Paho's automatic reconnect timer can outlive close during an outage.
+        options.setAutomaticReconnect(false);
         options.setCleanSession(false);
         options.setKeepAliveInterval(30);
         options.setConnectionTimeout((int) Math.max(1, Math.min(Integer.MAX_VALUE,
@@ -85,7 +111,44 @@ final class MqttSink implements AutoCloseable {
         if (config.availability()) {
             options.setWill(config.availabilityTopic(), bytes("offline"), Math.min(config.qos(), 1), true);
         }
-        client.connect(options).waitForCompletion(timeoutMillis());
+        return options;
+    }
+
+    private void scheduleReconnect() {
+        if (closed.get() || reconnectPending) {
+            return;
+        }
+        reconnectPending = true;
+        long delay = reconnectDelayMillis;
+        reconnectDelayMillis = Math.min(120_000, reconnectDelayMillis * 2);
+        reconnectTask = reconnect.schedule(this::reconnect, delay, TimeUnit.MILLISECONDS);
+    }
+
+    private void reconnect() {
+        synchronized (lifecycle) {
+            if (closed.get()) {
+                reconnectPending = false;
+                return;
+            }
+            try {
+                client.connect(connectionOptions(), null, new IMqttActionListener() {
+                    @Override public void onSuccess(IMqttToken token) {
+                        synchronized (lifecycle) {
+                            reconnectPending = false;
+                        }
+                    }
+                    @Override public void onFailure(IMqttToken token, Throwable cause) {
+                        synchronized (lifecycle) {
+                            reconnectPending = false;
+                            scheduleReconnect();
+                        }
+                    }
+                });
+            } catch (MqttException | RuntimeException e) {
+                reconnectPending = false;
+                scheduleReconnect();
+            }
+        }
     }
 
     void publish(Mapping.Message message) throws MqttException, InterruptedException {
@@ -170,6 +233,7 @@ final class MqttSink implements AutoCloseable {
             if (!closed.compareAndSet(false, true)) {
                 return;
             }
+            reconnect.shutdownNow();
             try {
                 if (client.isConnected() && config.availability()) {
                     offline = client.publish(config.availabilityTopic(), bytes("offline"), Math.min(config.qos(), 1), true);

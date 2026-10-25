@@ -3,7 +3,8 @@ USER root
 WORKDIR /project
 COPY --chown=1001:0 . .
 USER 1001
-RUN ./mvnw -B -ntp package -Dnative -DskipTests -Dquarkus.native.native-image-xmx=4g
+RUN ./mvnw -B -ntp package -Dnative -DskipTests -Dquarkus.native.native-image-xmx=3g \
+    -Dquarkus.native.additional-build-args-append=--parallelism=2
 
 FROM quay.io/quarkus/ubi9-quarkus-micro-image:2.0@sha256:aa84cf7f06096050253e740b2b6e679044c268c4db7971483777f1c61a501190
 WORKDIR /work

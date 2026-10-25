@@ -103,6 +103,22 @@ class MqttSinkTest {
         }
     }
 
+    @Test
+    void closingDuringBrokerOutageStopsOwnedReconnectThread() throws Exception {
+        try (TestBroker broker = new TestBroker();
+                MqttSink sink = new MqttSink(settings(broker, 0), new Events("error", "json"))) {
+            sink.connect();
+            broker.close();
+            await(() -> Thread.getAllStackTraces().keySet().stream()
+                    .anyMatch(thread -> thread.isAlive() && thread.getName().equals("buderus-mqtt-reconnect")));
+            sink.close();
+            await(() -> Thread.getAllStackTraces().keySet().stream()
+                    .noneMatch(thread -> thread.isAlive() && thread.getName().equals("buderus-mqtt-reconnect")));
+            assertTrue(Thread.getAllStackTraces().keySet().stream()
+                    .noneMatch(thread -> thread.isAlive() && thread.getName().startsWith("MQTT Reconnect:")));
+        }
+    }
+
     private static void await(BooleanSupplier condition) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
         while (!condition.getAsBoolean() && System.nanoTime() < deadline) {

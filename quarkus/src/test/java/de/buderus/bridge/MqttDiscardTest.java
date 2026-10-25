@@ -6,9 +6,11 @@ import java.util.List;
 import java.util.Map;
 import org.eclipse.paho.client.mqttv3.IMqttActionListener;
 import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
+import org.eclipse.paho.client.mqttv3.IMqttToken;
 import org.eclipse.paho.client.mqttv3.MqttAsyncClient;
 import org.eclipse.paho.client.mqttv3.MqttCallback;
 import org.eclipse.paho.client.mqttv3.MqttCallbackExtended;
+import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
 import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 import org.junit.jupiter.api.Test;
@@ -83,6 +85,12 @@ class MqttDiscardTest {
 
         @Override public boolean isConnected() {
             return connected;
+        }
+
+        @Override
+        public IMqttToken connect(MqttConnectOptions options, Object context, IMqttActionListener listener)
+                throws MqttException {
+            throw new MqttException(MqttException.REASON_CODE_CLIENT_NOT_CONNECTED);
         }
 
         @Override
