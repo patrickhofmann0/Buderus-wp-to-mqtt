@@ -1,0 +1,22 @@
+# Lokale Entwicklung: Mosquitto-Broker (ohne Authentifizierung) und lokal gebautes Image.
+#
+# Nur Broker:          docker compose -f docker-compose.dev.yml up -d mosquitto
+# Broker + Programm:   docker compose -f docker-compose.dev.yml up -d --build
+#
+# Für das Programm im Container in .env setzen: MQTT_BROKER=tcp://mosquitto:1883
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    command: mosquitto -c /mosquitto-no-auth.conf
+
+  buderus2mqtt:
+    build:
+      context: .
+      args:
+        VERSION: dev
+    image: buderus2mqtt:dev
+    env_file: .env
+    depends_on:
+      - mosquitto

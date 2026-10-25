@@ -1,0 +1,5 @@
+services:
+  buderus2mqtt:
+    image: ghcr.io/patrickhofmann0/buderus-wp-to-mqtt:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
