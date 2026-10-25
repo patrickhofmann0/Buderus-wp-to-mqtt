@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -27,7 +28,7 @@ type Client struct {
 
 type StatusError struct{ Code int }
 
-func (e *StatusError) Error() string { return fmt.Sprintf("API returned HTTP status %d", e.Code) }
+func (e *StatusError) Error() string { return fmt.Sprintf("api returned http status %d", e.Code) }
 
 type options struct {
 	timeout               time.Duration
@@ -54,7 +55,7 @@ func WithTimeout(timeout time.Duration) Option {
 func WithMaxBodySize(size int64) Option {
 	return func(o *options) error {
 		if size <= 0 || size == int64(^uint64(0)>>1) {
-			return errors.New("maximum body size must be between 1 and MaxInt64-1")
+			return errors.New("maximum body size must be between 1 and maxint64-1")
 		}
 		o.maxBody = size
 		return nil
@@ -63,7 +64,7 @@ func WithMaxBodySize(size int64) Option {
 
 func WithBearerToken(token string) Option {
 	return func(o *options) error {
-		if token == "" || !validHeaderValue(token) || strings.ContainsAny(token, " \t") {
+		if !validHeaderValue(token) || strings.ContainsAny(token, " \t") {
 			return errors.New("invalid bearer token")
 		}
 		o.token = token
@@ -73,7 +74,10 @@ func WithBearerToken(token string) Option {
 
 func WithBasicAuth(user, password string) Option {
 	return func(o *options) error {
-		if user == "" || strings.ContainsAny(user, ":\r\n\x00") || strings.ContainsAny(password, "\r\n\x00") {
+		if user == "" && password == "" {
+			return nil
+		}
+		if user == "" || strings.ContainsRune(user, ':') || hasControl(user) || hasControl(password) {
 			return errors.New("invalid basic authentication")
 		}
 		o.user, o.password, o.basic = user, password, true
@@ -84,11 +88,15 @@ func WithBasicAuth(user, password string) Option {
 func WithHeader(name, value string) Option {
 	return func(o *options) error {
 		if !validHeaderName(name) || !validHeaderValue(value) {
-			return errors.New("invalid HTTP header")
+			return errors.New("invalid http header")
 		}
 		o.headers.Set(name, value)
 		return nil
 	}
+}
+
+func hasControl(value string) bool {
+	return strings.IndexFunc(value, func(c rune) bool { return c < 32 || c == 127 }) >= 0
 }
 
 func validHeaderName(name string) bool {
@@ -96,7 +104,8 @@ func validHeaderName(name string) bool {
 		return false
 	}
 	for _, c := range []byte(name) {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strings.ContainsRune("!#$%&'*+-.^_`|~", rune(c))) {
+		allowed := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strings.ContainsRune("!#$%&'*+-.^_`|~", rune(c))
+		if !allowed {
 			return false
 		}
 	}
@@ -115,7 +124,7 @@ func validHeaderValue(value string) bool {
 func WithHTTPClient(client *http.Client) Option {
 	return func(o *options) error {
 		if client == nil {
-			return errors.New("HTTP client must not be nil")
+			return errors.New("http client must not be nil")
 		}
 		o.client = client
 		return nil
@@ -128,8 +137,8 @@ func WithInsecureSkipVerify(insecure bool) Option {
 
 func New(rawURL string, opts ...Option) (*Client, error) {
 	u, err := url.Parse(rawURL)
-	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Fragment != "" {
-		return nil, errors.New("API URL must be an absolute HTTP(S) URL without credentials or fragment")
+	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Fragment != "" || !validPort(u) {
+		return nil, errors.New("api url must be an absolute http(s) url without credentials or fragment")
 	}
 	o := options{timeout: DefaultTimeout, maxBody: DefaultMaxBodySize, headers: make(http.Header)}
 	for _, opt := range opts {
@@ -137,7 +146,7 @@ func New(rawURL string, opts ...Option) (*Client, error) {
 			return nil, errors.New("nil client option")
 		}
 		if err := opt(&o); err != nil {
-			return nil, fmt.Errorf("configure API client: %w", err)
+			return nil, fmt.Errorf("configure api client: %w", err)
 		}
 	}
 	if (o.basic && o.token != "") || ((o.basic || o.token != "") && o.headers.Get("Authorization") != "") {
@@ -159,7 +168,7 @@ func New(rawURL string, opts ...Option) (*Client, error) {
 		cloned.TLSClientConfig.InsecureSkipVerify = o.insecure // Explicit opt-in for private appliances.
 		client.Transport = cloned
 	} else if o.insecure {
-		return nil, errors.New("insecure TLS requires an HTTP transport")
+		return nil, errors.New("insecure tls requires an http transport")
 	}
 	client.Timeout = o.timeout
 	if o.token != "" {
@@ -172,26 +181,37 @@ func New(rawURL string, opts ...Option) (*Client, error) {
 	return &Client{url: u.String(), http: client, headers: o.headers.Clone(), maxBody: o.maxBody}, nil
 }
 
+func validPort(u *url.URL) bool {
+	if strings.HasSuffix(u.Host, ":") {
+		return false
+	}
+	if port := u.Port(); port != "" {
+		number, err := strconv.Atoi(port)
+		return err == nil && number > 0 && number <= 65535
+	}
+	return true
+}
+
 func (c *Client) Fetch(ctx context.Context) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create API request: %w", safeError(err))
+		return nil, fmt.Errorf("create api request: %w", safeError(err))
 	}
 	req.Header = c.headers.Clone()
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch API: %w", safeError(err))
+		return nil, fmt.Errorf("fetch api: %w", safeError(err))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &StatusError{Code: resp.StatusCode}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, c.maxBody+1))
 	if err != nil {
-		return nil, fmt.Errorf("read API response: %w", safeError(err))
+		return nil, fmt.Errorf("read api response: %w", safeError(err))
 	}
 	if int64(len(body)) > c.maxBody {
-		return nil, errors.New("API response exceeds maximum body size")
+		return nil, errors.New("api response exceeds maximum body size")
 	}
 	return body, nil
 }

@@ -6,8 +6,8 @@ Leichtgewichtiger Go-Service, der die REST-API einer Buderus-Wärmepumpe regelm�
 
 ## Eigenschaften
 
-- Go **1.27.3**, Modul `github.com/patrickhofmann0/Buderus-wp-to-mqtt`.
-- Wiederverwendbare öffentliche Pakete `config`, `restclient`, `mapper` und `mqttpub`.
+- Auslieferung ausschließlich als Docker-Container über GHCR.
+- Implementiert mit Go **1.27.3**; kein unterstütztes Go-Bibliotheksprodukt.
 - Ein oder mehrere HTTP(S)-Endpunkte, Bearer-Token oder HTTP Basic Auth.
 - Begrenzte Antwortgröße und konfigurierbare Netzwerk-Timeouts.
 - Rekursives JSON-Feldmapping oder unveränderte Weitergabe der Antwort.
@@ -39,6 +39,8 @@ docker compose logs -f buderus-wp-to-mqtt
 ```
 
 Die Binärdatei liest **ausschließlich Umgebungsvariablen**. Sie lädt keine `.env`-Datei. Docker Compose übergibt deren Werte über `env_file`; `docker run` benötigt `--env-file`.
+
+Die Vorlage ist eine Docker-ENV-Datei, kein Shell-Skript; nicht mit `source` einlesen. Werte mit Leerzeichen bleiben für die gemeinsame Nutzung mit Compose und `docker run --env-file` ohne Anführungszeichen, etwa `SCHEDULE=@every 60s`. Docker `--env-file` würde Anführungszeichen als Teil des Werts übernehmen. Bei einer manuellen Shell-Zuweisung dagegen separat quoten: `export SCHEDULE='@every 60s'`.
 
 Die Compose-Konfiguration verwendet:
 
@@ -87,8 +89,8 @@ Alle unterstützten Variablen stehen hier und in `.env.example`. Leere optionale
 
 | Variable | Standard | Bedeutung |
 | --- | --- | --- |
-| `API_URL` | erforderlich, sofern `API_URLS` nicht gesetzt | Absolute HTTP(S)-URL eines Endpunkts. |
-| `API_URLS` | nicht gesetzt | Kommagetrennte Liste `name=url`; hat Vorrang vor `API_URL`. |
+| `API_URL` | erforderlich, sofern `API_URLS` leer oder nicht gesetzt | Absolute HTTP(S)-URL eines Endpunkts. |
+| `API_URLS` | leer | Kommagetrennte Liste `name=url`; hat nur mit nichtleerem Wert Vorrang vor `API_URL`. |
 | `API_TOKEN` | leer | Bearer-Token; nicht mit Basic Auth kombinieren. |
 | `API_USER` | leer | Benutzer für HTTP Basic Auth. |
 | `API_PASSWORD` | leer | Basic-Auth-Passwort; erfordert `API_USER`. |
@@ -100,7 +102,7 @@ Alle unterstützten Variablen stehen hier und in `.env.example`. Leere optionale
 | `MQTT_USER` | leer | MQTT-Benutzername. |
 | `MQTT_PASSWORD` | leer | MQTT-Passwort. |
 | `MQTT_TOPIC` | `buderus/wp` | Topic-Präfix, ohne Wildcards oder NUL. |
-| `MQTT_QOS` | `0` | MQTT Quality of Service: `0`, `1` oder `2`. |
+| `MQTT_QOS` | `0` | MQTT Quality of Service für Daten: `0`, `1` oder `2`; Availability verwendet höchstens QoS `1`. |
 | `MQTT_RETAIN` | `false` | Retain-Flag für Datenmeldungen. |
 | `MQTT_PUBLISH_TIMEOUT` | `5s` | Positiver Timeout für MQTT-Operationen. |
 | `MQTT_AVAILABILITY` | `true` | Retained `online`/`offline` auf `MQTT_TOPIC/status`, einschließlich Last Will. |
@@ -117,7 +119,7 @@ Alle unterstützten Variablen stehen hier und in `.env.example`. Leere optionale
 API_URLS=heating=http://device/api,hotwater=http://device/water
 ```
 
-Namen müssen eindeutig sein und ausschließlich `[A-Za-z0-9_-]` enthalten. URLs erlauben nur `http` oder `https`, keine eingebetteten Zugangsdaten oder Fragmente. `API_URLS` bei Nichtgebrauch **weglassen**, nicht leer setzen. Authentifizierung und HTTP-Einstellungen gelten für alle Endpunkte gemeinsam.
+Namen müssen eindeutig sein und ausschließlich `[A-Za-z0-9_-]` enthalten. URLs erlauben nur `http` oder `https`, keine eingebetteten Zugangsdaten oder Fragmente. Ist `API_URLS` leer oder nicht gesetzt, wird `API_URL` verwendet. Authentifizierung und HTTP-Einstellungen gelten für alle Endpunkte gemeinsam.
 
 Mit `API_URL` werden Daten auf `MQTT_TOPIC` beziehungsweise `MQTT_TOPIC/feld` veröffentlicht. Mit `API_URLS` lauten die Topics `MQTT_TOPIC/name` beziehungsweise `MQTT_TOPIC/name/feld`. Der Verfügbarkeitsstatus bleibt global auf `MQTT_TOPIC/status`.
 
@@ -171,6 +173,9 @@ In Schlüsseln werden `/`, `+`, `#`, Leerzeichen und NUL durch `_` ersetzt; ein 
 - `restclient` führt HTTP-GETs aus. Nicht-2xx-Antworten ergeben einen typisierten `*restclient.StatusError` mit `Code`; übergroße Antworten werden erkannt und verworfen, nicht abgeschnitten veröffentlicht.
 - API-, Mapping- und Veröffentlichungsfehler werden protokolliert. Ein späterer geplanter Durchlauf kann erneut versuchen, aktuelle Daten zu übertragen.
 - MQTT-Verbindungen werden automatisch wiederhergestellt. Bei Verbindung beziehungsweise Reconnect wird retained `online` veröffentlicht; beim geordneten Beenden `offline`. Bei Verbindungsverlust übernimmt der Broker das retained Last Will `offline`.
+- Datenmeldungen verwenden `MQTT_QOS`. Verfügbarkeitsmeldungen einschließlich Last Will verwenden höchstens QoS 1, also `min(MQTT_QOS, 1)`, damit ein Status nach Reconnect erneut als vollständige Meldung übertragen werden kann.
+- Ohne offene Broker-Verbindung, auch während eines Reconnects, werden Datenveröffentlichungen abgewiesen. Höchstens eine Datenmeldung darf gleichzeitig in der Warteschlange beziehungsweise unbestätigt sein; es gibt keine unbegrenzte Offline-Warteschlange. Bleibt sie ausstehend, schlagen weitere Veröffentlichungen fehl, statt immer mehr Speicher zu belegen.
+- Ein MQTT-Timeout oder Kontextabbruch beendet das Warten, kann eine bereits übergebene Meldung aber nicht zurückrufen: Sie kann später noch beim Broker eintreffen. Bis zur tatsächlichen Bestätigung werden weitere Datenmeldungen mit einem Pending-Fehler abgewiesen. Spätere Abfragerunden können daher fehlschlagen, statt sich anzusammeln. Availability verwendet einen separaten begrenzten Kanal; `offline` beim Beenden wird bestmöglich innerhalb des Shutdown-Zeitlimits übertragen.
 - SIGINT/SIGTERM beendet die Anwendung geordnet. Logs gehen ausschließlich auf stdout; Aufbewahrung und Rotation übernimmt die Laufzeitumgebung.
 - `online` bestätigt die Broker-Verbindung, **nicht** erfolgreiche oder aktuelle REST-Abfragen. Es gibt keinen Health-Flag und keinen eingebauten Healthcheck-Endpunkt: Eine reine Konfigurationsprüfung wäre kein echter Laufzeitcheck. Ohne Heartbeat beziehungsweise persistenten Erfolgszustand wäre ein separater Prozess ebenfalls kein verlässlicher Zustandsprüfer. Prozessende, Container-Restart-Policy, Brokerstatus und extern überwachte Datenaktualität nutzen.
 - `.env` enthält möglicherweise Geheimnisse: nicht committen und Zugriffsrechte beschränken. Token, Passwörter und vollständige sensible Antworten gehören nicht in Logs.
@@ -179,102 +184,9 @@ In Schlüsseln werden `/`, `+`, `#`, Leerzeichen und NUL durch `_` ersetzt; ein 
 
 Das Image liegt grob bei **8–10 MB**, der RAM-Verbrauch häufig bei **5–10 MB**. Dies sind **keine Garantien**: Architektur, Go-/Bibliotheksversionen, TLS, Antwortgrößen und Mapping beeinflussen Größe und Speicherbedarf. Das Compose-Limit von 32 MB kann bei großen Antworten zu knapp sein.
 
-## Verwendung als Go-Bibliothek
-
-```sh
-go get github.com/patrickhofmann0/Buderus-wp-to-mqtt
-```
-
-Bei einem privaten Fork beziehungsweise privaten Repository den passenden Modulpfad in `GOPRIVATE` aufnehmen und Git-Zugangsdaten außerhalb des Codes konfigurieren, z. B. `go env -w GOPRIVATE=github.com/patrickhofmann0/Buderus-wp-to-mqtt`.
-
-Das folgende eigenständige Beispiel fragt einmalig die über `API_URL` angegebene URL ab. Es nutzt einen eigenen `mapper.Func`; `MQTT_BROKER` ist optional:
-
-```go
-package main
-
-import (
-	"context"
-	"errors"
-	"fmt"
-	"log"
-	"os"
-	"time"
-
-	"github.com/patrickhofmann0/Buderus-wp-to-mqtt/mapper"
-	"github.com/patrickhofmann0/Buderus-wp-to-mqtt/mqttpub"
-	"github.com/patrickhofmann0/Buderus-wp-to-mqtt/restclient"
-)
-
-func main() {
-	if err := run(); err != nil {
-		log.Print(err)
-		os.Exit(1)
-	}
-}
-
-func run() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	client, err := restclient.New(os.Getenv("API_URL"),
-		restclient.WithTimeout(15*time.Second),
-		restclient.WithMaxBodySize(1<<20))
-	if err != nil {
-		return fmt.Errorf("create REST client: %w", err)
-	}
-	broker := os.Getenv("MQTT_BROKER")
-	if broker == "" {
-		broker = "tcp://localhost:1883"
-	}
-	publisher, err := mqttpub.New(mqttpub.Config{
-		Broker: broker, ClientID: "buderus-library-example",
-		Timeout: 5 * time.Second,
-	})
-	if err != nil {
-		return fmt.Errorf("create publisher: %w", err)
-	}
-	defer func() {
-		if err := publisher.Close(); err != nil {
-			log.Printf("close publisher: %v", err)
-		}
-	}()
-
-	body, err := client.Fetch(ctx)
-	if err != nil {
-		var status *restclient.StatusError
-		if errors.As(err, &status) {
-			return fmt.Errorf("API status %d: %w", status.Code, err)
-		}
-		return fmt.Errorf("fetch: %w", err)
-	}
-	custom := mapper.Func(func(body []byte) ([]mapper.Message, error) {
-		if len(body) == 0 {
-			return nil, errors.New("empty API response")
-		}
-		return []mapper.Message{{
-			Topic: "buderus/custom/raw", Payload: body, Retain: false,
-		}}, nil
-	})
-	messages, err := custom.Map(body)
-	if err != nil {
-		return fmt.Errorf("map: %w", err)
-	}
-	if err := publisher.Publish(ctx, messages...); err != nil {
-		return fmt.Errorf("publish: %w", err)
-	}
-	return nil
-}
-```
-
-`restclient.New` akzeptiert Optionen `WithTimeout`, `WithMaxBodySize`, `WithBearerToken`, `WithBasicAuth`, `WithHeader`, `WithHTTPClient` und `WithInsecureSkipVerify`. `Fetch(ctx)` respektiert Abbruch und Timeout; widersprüchliche Authentifizierungsoptionen werden abgelehnt.
-
-`mapper.Mapper` besitzt `Map([]byte) ([]mapper.Message, error)`; `mapper.Func`, `mapper.JSONFields` und `mapper.Passthrough` implementieren dieses Interface. `Message` enthält `Topic`, `Payload` und `Retain`.
-
-`mqttpub.Config` umfasst `Broker`, `ClientID`, `Username`, `Password`, `QoS`, `Timeout`, `KeepAlive` und `AvailabilityTopic`. `KeepAlive` verwendet standardmäßig `30s` und besitzt **keine zusätzliche ENV-Variable**. Ein leeres `AvailabilityTopic` deaktiviert den Bibliotheks-Verfügbarkeitsstatus; die Anwendung setzt es anhand von `MQTT_AVAILABILITY`.
-
 ## Entwicklung
 
-Voraussetzung: Go **1.27.3**; für Container Docker mit Compose.
+Für die Nutzung ist ausschließlich Docker erforderlich, optional mit Compose. Go wird nur für die Entwicklung benötigt: Version **1.27.3**. Der Modulpfad `github.com/patrickhofmann0/Buderus-wp-to-mqtt` dient dem technischen Build; es gibt keine Veröffentlichung oder Installation als Go-Bibliothek und keine unterstützte stabile Library-API.
 
 ```sh
 go build ./...
@@ -301,4 +213,4 @@ docker-compose.yml            Service und optionales dev-Profil
 AGENTS.md                     Architektur- und Entwicklungsregeln
 ```
 
-Die Anwendung verbindet die Pakete; Bibliothekspakete sollen unabhängig von CLI und Scheduler nutzbar bleiben. Weitere Vorgaben für Änderungen stehen in [AGENTS.md](AGENTS.md).
+Die Verzeichnisse und Go-Pakete sind Implementierungsdetails des Container-Service, keine Schnittstelle für externe Bibliotheksnutzer. Die Anwendung verbindet Konfiguration, REST, Mapping und MQTT. Der interne MQTT-Keepalive beträgt standardmäßig `30s`; dafür gibt es keine zusätzliche ENV-Variable. Weitere Vorgaben für Änderungen stehen in [AGENTS.md](AGENTS.md).

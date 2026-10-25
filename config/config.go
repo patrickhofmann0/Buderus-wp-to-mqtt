@@ -36,8 +36,8 @@ type Config struct {
 	LogFormat                      string
 }
 
-// Load reads only documented variables. API_URLS, when present, takes precedence
-// over API_URL. KeepAlive is the library default (30 seconds), not an environment setting.
+// Load reads only documented variables. Nonempty API_URLS takes precedence over
+// API_URL. KeepAlive is the library default (30 seconds), not an environment setting.
 func Load() (Config, error) {
 	var c Config
 	var err error
@@ -48,7 +48,7 @@ func Load() (Config, error) {
 		return fallback
 	}
 	fail := func(key string) (Config, error) { return Config{}, fmt.Errorf("invalid %s", key) }
-	if values, ok := os.LookupEnv("API_URLS"); ok {
+	if values, ok := os.LookupEnv("API_URLS"); ok && values != "" {
 		seen := make(map[string]bool)
 		for _, entry := range strings.Split(values, ",") {
 			name, endpoint, found := strings.Cut(strings.TrimSpace(entry), "=")
@@ -68,10 +68,10 @@ func Load() (Config, error) {
 	}
 	c.APIToken, c.APIUser, c.APIPassword = get("API_TOKEN", ""), get("API_USER", ""), get("API_PASSWORD", "")
 	if c.APIToken != "" && (c.APIUser != "" || c.APIPassword != "") {
-		return fail("API authentication")
+		return fail("api authentication")
 	}
-	if strings.ContainsAny(c.APIToken, " \t\r\n\x00") || strings.ContainsAny(c.APIUser, ":\r\n\x00") || strings.ContainsAny(c.APIPassword, "\r\n\x00") || (c.APIPassword != "" && c.APIUser == "") {
-		return fail("API authentication")
+	if strings.ContainsAny(c.APIToken, " \t") || strings.ContainsRune(c.APIUser, ':') || hasControl(c.APIToken) || hasControl(c.APIUser) || hasControl(c.APIPassword) || (c.APIPassword != "" && c.APIUser == "") {
+		return fail("api authentication")
 	}
 	for _, item := range []struct {
 		key, fallback string
@@ -134,7 +134,7 @@ func Load() (Config, error) {
 		}
 	}
 	if err := mqttpub.Validate(c.MQTT); err != nil {
-		return Config{}, fmt.Errorf("invalid MQTT configuration: %w", err)
+		return Config{}, fmt.Errorf("invalid mqtt configuration: %w", err)
 	}
 	c.Mapping = get("MAPPING", "fields")
 	if c.Mapping != "fields" && c.Mapping != "passthrough" {
@@ -167,25 +167,37 @@ func Load() (Config, error) {
 	return c, nil
 }
 
+func hasControl(value string) bool {
+	return strings.IndexFunc(value, func(c rune) bool { return c < 32 || c == 127 }) >= 0
+}
+
 func validName(name string) bool {
 	if name == "" {
 		return false
 	}
-
-	func validTopic(topic string) bool {
-		return topic != "" && len(topic) <= 65535 && utf8.ValidString(topic) && !strings.ContainsAny(topic, "+#\x00")
-	}
 	for _, c := range name {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+		allowed := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-'
+		if !allowed {
 			return false
 		}
 	}
 	return true
 }
 
+func validTopic(topic string) bool {
+	return topic != "" && len(topic) <= 65535 && utf8.ValidString(topic) && !strings.ContainsAny(topic, "+#\x00")
+}
+
 func validAPIURL(raw string) bool {
 	u, err := url.Parse(raw)
-	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Hostname() != "" && u.User == nil && u.Fragment == ""
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Fragment != "" || strings.HasSuffix(u.Host, ":") {
+		return false
+	}
+	if port := u.Port(); port != "" {
+		number, err := strconv.Atoi(port)
+		return err == nil && number > 0 && number <= 65535
+	}
+	return true
 }
 
 func validateSchedule(schedule string) error {

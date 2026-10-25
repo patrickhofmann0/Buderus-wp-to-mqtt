@@ -19,7 +19,9 @@ func TestFetchOptions(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer "+"token" || r.Header.Get("X-Test") != "yes" {
 			t.Error("missing configured headers")
 		}
-		io.WriteString(w, `{"ok":true}`)
+		if _, err := io.WriteString(w, `{"ok":true}`); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer server.Close()
 	client, err := New(server.URL, WithBearerToken("token"), WithHeader("X-Test", "yes"), WithTimeout(time.Second), WithMaxBodySize(11))
@@ -74,7 +76,11 @@ func TestStatusAndSize(t *testing.T) {
 	}
 	for _, body := range []string{"1234", "12345"} {
 		t.Run(body, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, body) }))
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if _, err := io.WriteString(w, body); err != nil {
+					t.Error(err)
+				}
+			}))
 			defer server.Close()
 			client, err := New(server.URL, WithMaxBodySize(4))
 			if err != nil {
@@ -109,7 +115,11 @@ func TestCancellationAndTimeout(t *testing.T) {
 }
 
 func TestTLSAndClientCloning(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") }))
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.WriteString(w, "ok"); err != nil {
+			t.Error(err)
+		}
+	}))
 	defer server.Close()
 	client, err := New(server.URL)
 	if err != nil {
@@ -152,6 +162,25 @@ type trackedBody struct {
 	closed *atomic.Bool
 }
 
+type failingReader struct{ err error }
+
+func (r failingReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestReadErrorWrapping(t *testing.T) {
+	want := errors.New("private response details")
+	var closed atomic.Bool
+	client, err := New("http://example.com", WithHTTPClient(&http.Client{Transport: roundTripper(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: trackedBody{failingReader{want}, &closed}}, nil
+	})}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Fetch(context.Background())
+	if !errors.Is(err, want) || strings.Contains(err.Error(), "private response details") || !closed.Load() {
+		t.Fatalf("read error not safely wrapped or body not closed: %v", err)
+	}
+}
+
 func (b trackedBody) Close() error { b.closed.Store(true); return nil }
 
 func TestCustomTransportAndBodyClosure(t *testing.T) {
@@ -165,7 +194,10 @@ func TestCustomTransportAndBodyClosure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			client.Fetch(context.Background())
+			_, err = client.Fetch(context.Background())
+			if (err == nil) != (code == http.StatusOK && body == "ok") {
+				t.Fatalf("unexpected response error: %v", err)
+			}
 			if !closed.Load() {
 				t.Fatal("response body not closed")
 			}
@@ -193,12 +225,12 @@ func TestErrorsDoNotLeakURLs(t *testing.T) {
 }
 
 func TestValidationAndDefaults(t *testing.T) {
-	for _, raw := range []string{"", "/relative", "ftp://example.com", "https://", "http://" + "user@example.com", "https://example.com/#fragment", "http://["} {
+	for _, raw := range []string{"", "/relative", "ftp://example.com", "https://", "http://" + "user@example.com", "https://example.com/#fragment", "http://[", "http://host:", "http://host:0", "http://host:65536"} {
 		if _, err := New(raw); err == nil {
 			t.Errorf("accepted URL %q", raw)
 		}
 	}
-	for _, opt := range []Option{nil, WithTimeout(0), WithTimeout(-1), WithMaxBodySize(0), WithMaxBodySize(-1), WithMaxBodySize(1<<63 - 1), WithBearerToken(""), WithBearerToken("bad\r\n"), WithBearerToken("bad token"), WithBasicAuth("", "pass"), WithBasicAuth("a:b", "pass"), WithHeader("", "value"), WithHeader("Bad Header", "value"), WithHeader("X-Test", "\x00"), WithHTTPClient(nil)} {
+	for _, opt := range []Option{nil, WithTimeout(0), WithTimeout(-1), WithMaxBodySize(0), WithMaxBodySize(-1), WithMaxBodySize(1<<63 - 1), WithBearerToken("bad\r\n"), WithBearerToken("bad token"), WithBasicAuth("", "pass"), WithBasicAuth("a:b", "pass"), WithHeader("", "value"), WithHeader("Bad Header", "value"), WithHeader("X-Test", "\x00"), WithHTTPClient(nil)} {
 		if _, err := New("https://example.com", opt); err == nil {
 			t.Error("accepted invalid option")
 		}
@@ -214,5 +246,29 @@ func TestValidationAndDefaults(t *testing.T) {
 	}
 	if client.http.Timeout != 15*time.Second || client.maxBody != 1048576 || client.http.Transport.(*http.Transport).TLSClientConfig.InsecureSkipVerify {
 		t.Fatal("incorrect defaults")
+	}
+}
+
+func TestEmptyAuthOptions(t *testing.T) {
+	for _, tc := range []struct {
+		opts   []Option
+		prefix string
+	}{
+		{[]Option{WithBearerToken(""), WithBasicAuth("", "")}, ""},
+		{[]Option{WithBearerToken("token"), WithBasicAuth("", "")}, "Bearer "},
+		{[]Option{WithBearerToken(""), WithBasicAuth("user", "password")}, "Basic "},
+	} {
+		client, err := New("https://example.com", tc.opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		auth := client.headers.Get("Authorization")
+		_, present := client.headers["Authorization"]
+		if tc.prefix == "" && present {
+			t.Fatal("empty auth must not emit an Authorization header")
+		}
+		if tc.prefix != "" && !strings.HasPrefix(auth, tc.prefix) {
+			t.Fatal("empty auth option interfered with configured authentication")
+		}
 	}
 }

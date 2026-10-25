@@ -23,9 +23,13 @@ func cleanEnvironment(t *testing.T) {
 		}
 		t.Cleanup(func() {
 			if exists {
-				os.Setenv(key, value)
+				if err := os.Setenv(key, value); err != nil {
+					t.Error(err)
+				}
 			} else {
-				os.Unsetenv(key)
+				if err := os.Unsetenv(key); err != nil {
+					t.Error(err)
+				}
 			}
 		})
 	}
@@ -87,16 +91,16 @@ func TestOverrides(t *testing.T) {
 
 func TestInvalidValues(t *testing.T) {
 	cases := map[string][]string{
-		"API_URL":     {"", "/relative", "ftp://example.com", "https://", "http://" + "user@example.com", "http://[", "https://example.com/#fragment"},
-		"API_URLS":    {"", "a=http://example.com,", ",a=http://example.com", "missing", "=http://example.com", "a=", "a=http://one,a=http://two", "a/b=http://example.com", "a+=http://example.com", "a#=http://example.com", "a b=http://example.com", "a=ftp://example.com"},
+		"API_URL":     {"", "/relative", "ftp://example.com", "https://", "http://" + "user@example.com", "http://[", "https://example.com/#fragment", "http://host:", "http://host:0", "http://host:65536"},
+		"API_URLS":    {" ", "a=http://example.com,", ",a=http://example.com", "missing", "=http://example.com", "a=", "a=http://one,a=http://two", "a/b=http://example.com", "a+=http://example.com", "a#=http://example.com", "a b=http://example.com", "a=ftp://example.com"},
 		"API_TIMEOUT": {"", "0", "-1s", "bad"}, "API_MAX_BODY_BYTES": {"", "0", "-1", "1.5", "9223372036854775807", "9223372036854775808"},
-		"API_INSECURE_SKIP_VERIFY": {"", "yes"}, "MQTT_BROKER": {"", "ftp://example.com", "tcp://", "tcp://" + "user@host", "tcp://["},
+		"API_INSECURE_SKIP_VERIFY": {"", "yes"}, "MQTT_BROKER": {"", "ftp://example.com", "tcp://", "tcp://" + "user@host", "tcp://[", "tcp://host:0", "tcp://host:65536"},
 		"MQTT_CLIENT_ID": {"", "\xff"}, "MQTT_TOPIC": {"", "a/+", "a/#", "\xff"},
 		"MQTT_QOS": {"", "-1", "3", "256", "bad"}, "MQTT_RETAIN": {"", "yes"}, "MQTT_AVAILABILITY": {"", "yes"},
 		"MQTT_PUBLISH_TIMEOUT": {"", "0s", "-1s", "bad"}, "MAPPING": {"", "unknown"}, "POLL_ON_START": {"", "yes"},
 		"SCHEDULE": {"", "@every 0s", "@every -1s", "@every nonsense", "@every", "* * * * * *", "61 * * * *", "nonsense"},
 		"TZ":       {"", "Missing/Timezone"}, "LOG_LEVEL": {"", "trace"}, "LOG_FORMAT": {"", "xml"},
-		"API_TOKEN": {"bad\r\n", "bad token"}, "API_USER": {"a:b"}, "API_PASSWORD": {"secret"},
+		"API_TOKEN": {"bad\r\n", "bad token", "bad\x01", "bad\x7f"}, "API_USER": {"a:b", "bad\x01"}, "API_PASSWORD": {"secret", "bad\x01"},
 	}
 	for key, values := range cases {
 		for _, value := range values {
@@ -157,17 +161,6 @@ func TestURLListPrecedenceAndLimits(t *testing.T) {
 	if _, err := Load(); err != nil {
 		t.Fatal(err)
 	}
-
-	func TestTopicValidation(t *testing.T) {
-		for _, topic := range []string{"", "a\x00b", "a/+", "a/#", "\xff", strings.Repeat("a", 65536)} {
-			if validTopic(topic) {
-				t.Errorf("invalid topic accepted: %q", topic)
-			}
-		}
-		if !validTopic("buderus/wp") {
-			t.Fatal("valid topic rejected")
-		}
-	}
 	t.Setenv("MQTT_TOPIC", strings.Repeat("a", 65530))
 	if _, err := Load(); err == nil {
 		t.Fatal("availability topic exceeding MQTT limit accepted")
@@ -179,5 +172,38 @@ func TestURLListPrecedenceAndLimits(t *testing.T) {
 	t.Setenv("MQTT_TOPIC", strings.Repeat("a", 65536))
 	if _, err := Load(); err == nil {
 		t.Fatal("oversized MQTT topic accepted")
+	}
+}
+
+func TestTopicValidation(t *testing.T) {
+	for _, topic := range []string{"", "a\x00b", "a/+", "a/#", "\xff", strings.Repeat("a", 65536)} {
+		if validTopic(topic) {
+			t.Errorf("invalid topic accepted: %q", topic)
+		}
+	}
+	if !validTopic("buderus/wp") {
+		t.Fatal("valid topic rejected")
+	}
+}
+
+func TestEmptyURLListFallback(t *testing.T) {
+	cleanEnvironment(t)
+	t.Setenv("API_URLS", "")
+	c, err := Load()
+	if err != nil || len(c.Endpoints) != 1 || c.Endpoints[0].URL != "https://example.com/api" {
+		t.Fatalf("empty API_URLS did not fall back to API_URL: %#v, %v", c.Endpoints, err)
+	}
+	t.Setenv("API_URL", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("empty API_URL and API_URLS accepted")
+	}
+}
+
+func TestInvalidUTF8TopicWithoutAvailability(t *testing.T) {
+	cleanEnvironment(t)
+	t.Setenv("MQTT_AVAILABILITY", "false")
+	t.Setenv("MQTT_TOPIC", "\xff")
+	if _, err := Load(); err == nil {
+		t.Fatal("invalid UTF-8 topic accepted without availability")
 	}
 }
