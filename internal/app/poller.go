@@ -549,8 +549,8 @@ func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCi
 		}
 	}
 	// Kühlwerte werden nur im Wartungspayload veröffentlicht, nicht als HA-Sensoren angelegt.
-	for _, maintenanceSensor := range []mqtt.Sensor{
-		{
+	sensors = append(sensors,
+		mqtt.Sensor{
 			Key:        "compressor_starts_total",
 			Name:       "Verdichterstarts",
 			StateTopic: MaintenanceTopic(topicPrefix),
@@ -558,7 +558,7 @@ func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCi
 			StateClass: "total_increasing",
 			Icon:       "mdi:counter",
 		},
-		{
+		mqtt.Sensor{
 			Key:         "working_time_total",
 			Name:        "Betriebszeit",
 			StateTopic:  MaintenanceTopic(topicPrefix),
@@ -568,7 +568,7 @@ func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCi
 			StateClass:  "total_increasing",
 			Icon:        "mdi:timer-outline",
 		},
-		{
+		mqtt.Sensor{
 			Key:        "compressor_starts_heating",
 			Name:       "Verdichterstarts",
 			StateTopic: MaintenanceTopic(topicPrefix),
@@ -577,7 +577,7 @@ func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCi
 			Icon:       "mdi:counter",
 			SubDevice:  &mqtt.SubDevice{Key: "heating", Name: "Heizung"},
 		},
-		{
+		mqtt.Sensor{
 			Key:         "working_time_heating",
 			Name:        "Betriebszeit",
 			StateTopic:  MaintenanceTopic(topicPrefix),
@@ -588,7 +588,7 @@ func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCi
 			Icon:        "mdi:timer-outline",
 			SubDevice:   &mqtt.SubDevice{Key: "heating", Name: "Heizung"},
 		},
-		{
+		mqtt.Sensor{
 			Key:        "compressor_starts_dhw",
 			Name:       "Verdichterstarts",
 			StateTopic: MaintenanceTopic(topicPrefix),
@@ -597,7 +597,7 @@ func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCi
 			Icon:       "mdi:counter",
 			SubDevice:  &mqtt.SubDevice{Key: "dhw", Name: "Warmwasser"},
 		},
-		{
+		mqtt.Sensor{
 			Key:         "working_time_dhw",
 			Name:        "Betriebszeit",
 			StateTopic:  MaintenanceTopic(topicPrefix),
@@ -608,9 +608,7 @@ func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCi
 			Icon:        "mdi:timer-outline",
 			SubDevice:   &mqtt.SubDevice{Key: "dhw", Name: "Warmwasser"},
 		},
-	} {
-		sensors = append(sensors, maintenanceSensor)
-	}
+	)
 
 	// Home Assistant muss das Hauptgerät kennen, bevor es Untergeräte über via_device verknüpfen kann.
 	mainDeviceSensors := make([]mqtt.Sensor, 0, len(sensors))
