@@ -157,6 +157,28 @@ func TestFetchStringHeatingCircuitMode(t *testing.T) {
 	}
 }
 
+func TestFetchCurrentRoomSetpointOffState(t *testing.T) {
+	path := HeatingCircuitPath("hc1", "currentRoomSetpoint")
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != path {
+			t.Errorf("path = %q, want %q", r.URL.Path, path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"/heatingCircuits/hc1/currentRoomSetpoint","type":"floatValue","value":0,"unitOfMeasure":"C","state":[{"off":0}]}`))
+	})
+
+	got, err := client.FetchValue(context.Background(), path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Value == nil || *got.Value != 0 {
+		t.Fatalf("Value = %v, want 0", got.Value)
+	}
+	if got.SensorFaultState() != "off" {
+		t.Errorf("SensorFaultState() = %q, want off", got.SensorFaultState())
+	}
+}
+
 func TestValueResponseSensorFault(t *testing.T) {
 	ptr := func(value float64) *float64 { return &value }
 	response := ValueResponse{

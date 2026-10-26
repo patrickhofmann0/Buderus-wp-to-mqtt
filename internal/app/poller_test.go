@@ -66,9 +66,11 @@ func TestPollOnce(t *testing.T) {
 			},
 		},
 		values: map[string]buderus.ValueResponse{
-			buderus.PathCompressorPower:    {Value: ptr(460), Unit: "W"},
-			buderus.PathModulation:         {Value: ptr(13), Unit: "%"},
-			buderus.PathOutdoorTemperature: {Value: ptr(7.5), UnitOfMeasure: "C", State: []map[string]float64{{"open": -32768}, {"short": 32767}}},
+			buderus.PathCompressorPower:                              {Value: ptr(460), Unit: "W"},
+			buderus.PathModulation:                                   {Value: ptr(13), Unit: "%"},
+			buderus.PathOutdoorTemperature:                           {Value: ptr(7.5), UnitOfMeasure: "C", State: []map[string]float64{{"open": -32768}, {"short": 32767}}},
+			buderus.HeatingCircuitPath("hc1", "currentRoomSetpoint"): {Value: ptr(21), UnitOfMeasure: "C", State: []map[string]float64{{"off": 0}}},
+			buderus.HeatingCircuitPath("hc2", "currentRoomSetpoint"): {Value: ptr(0), UnitOfMeasure: "C", State: []map[string]float64{{"off": 0}}},
 		},
 		strings: map[string]buderus.StringResponse{
 			buderus.HeatingCircuitPath("hc1", "currentSuWiMode"): {Value: "forced"},
@@ -104,11 +106,11 @@ func TestPollOnce(t *testing.T) {
 	if !publisher.retained["buderus/wp/temperatures"] {
 		t.Error("temperature state should be retained")
 	}
-	if got := publisher.published["buderus/wp/hc1"]; got != `{"summerWinterMode":"Winter"}` {
-		t.Errorf("hc1 payload = %s, want Winter mode", got)
+	if got := publisher.published["buderus/wp/hc1"]; got != `{"summerWinterMode":"Winter","roomSetpoint":21}` {
+		t.Errorf("hc1 payload = %s, want Winter mode and 21 °C setpoint", got)
 	}
 	if got := publisher.published["buderus/wp/hc2"]; got != `{"summerWinterMode":"Sommer"}` {
-		t.Errorf("hc2 payload = %s, want Sommer mode", got)
+		t.Errorf("hc2 payload = %s, want Sommer mode without an off setpoint", got)
 	}
 	if !publisher.retained["buderus/wp/hc1"] || !publisher.retained["buderus/wp/hc2"] {
 		t.Error("heating circuit mode states should be retained")
@@ -198,6 +200,45 @@ func TestHeatingCircuitModeErrorsAreIndependent(t *testing.T) {
 	}
 }
 
+func TestHeatingCircuitPublishesAvailableFieldWhenOtherFetchFails(t *testing.T) {
+	modePath := buderus.HeatingCircuitPath("hc1", "currentSuWiMode")
+	setpointPath := buderus.HeatingCircuitPath("hc1", "currentRoomSetpoint")
+	tests := []struct {
+		name      string
+		fetcher   *fakeFetcher
+		wantState string
+	}{
+		{
+			name: "room setpoint when mode fetch fails",
+			fetcher: &fakeFetcher{
+				values: map[string]buderus.ValueResponse{setpointPath: {Value: ptr(20.5)}},
+				errs:   map[string]error{modePath: errors.New("mode endpoint unavailable")},
+			},
+			wantState: `{"roomSetpoint":20.5}`,
+		},
+		{
+			name: "mode when room setpoint fetch fails",
+			fetcher: &fakeFetcher{
+				strings: map[string]buderus.StringResponse{modePath: {Value: "forced"}},
+				errs:    map[string]error{setpointPath: errors.New("setpoint endpoint unavailable")},
+			},
+			wantState: `{"summerWinterMode":"Winter"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
+			poller := NewPoller(tt.fetcher, publisher, "buderus/wp", nil, discardLogger())
+			if err := poller.pollHeatingCircuit(context.Background(), DefaultHeatingCircuits[0]); err != nil {
+				t.Fatalf("pollHeatingCircuit() error = %v", err)
+			}
+			if got := publisher.published["buderus/wp/hc1"]; got != tt.wantState {
+				t.Errorf("state = %s, want %s", got, tt.wantState)
+			}
+		})
+	}
+}
+
 func TestUnknownHeatingCircuitModeIsNotPublished(t *testing.T) {
 	fetcher := &fakeFetcher{
 		strings: map[string]buderus.StringResponse{
@@ -232,8 +273,8 @@ func TestTranslateSummerWinterMode(t *testing.T) {
 
 func TestSensors(t *testing.T) {
 	sensors := Sensors("buderus/wp", DefaultCircuits)
-	if len(sensors) != 13 {
-		t.Fatalf("got %d sensors, want 13", len(sensors))
+	if len(sensors) != 15 {
+		t.Fatalf("got %d sensors, want 15", len(sensors))
 	}
 
 	keys := map[string]bool{}
@@ -248,6 +289,8 @@ func TestSensors(t *testing.T) {
 		"outdoor_temperature",
 		"hc1_summer_winter_mode",
 		"hc2_summer_winter_mode",
+		"hc1_room_setpoint",
+		"hc2_room_setpoint",
 	} {
 		if !keys[key] {
 			t.Errorf("missing sensor %q", key)
@@ -255,6 +298,11 @@ func TestSensors(t *testing.T) {
 	}
 	foundCompressorPower, foundModulation, foundOutdoorTemperature := false, false, false
 	foundHeatingModes := map[string]bool{}
+	foundRoomSetpoints := map[string]bool{}
+	roomSetpointTopics := map[string]string{
+		"hc1_room_setpoint": "buderus/wp/hc1",
+		"hc2_room_setpoint": "buderus/wp/hc2",
+	}
 	for _, s := range sensors {
 		if s.Key == "compressor_power" {
 			foundCompressorPower = true
@@ -280,6 +328,12 @@ func TestSensors(t *testing.T) {
 				t.Errorf("unexpected heating circuit mode sensor: %+v", s)
 			}
 		}
+		if s.Key == "hc1_room_setpoint" || s.Key == "hc2_room_setpoint" {
+			foundRoomSetpoints[s.Key] = true
+			if s.StateTopic != roomSetpointTopics[s.Key] || s.JSONField != "roomSetpoint" || s.Unit != "°C" || s.DeviceClass != "temperature" || s.StateClass != "measurement" {
+				t.Errorf("unexpected room setpoint sensor: %+v", s)
+			}
+		}
 	}
 	if !foundCompressorPower {
 		t.Error("compressor_power sensor not found")
@@ -292,6 +346,11 @@ func TestSensors(t *testing.T) {
 	}
 	for _, key := range []string{"hc1_summer_winter_mode", "hc2_summer_winter_mode"} {
 		if !foundHeatingModes[key] {
+			t.Errorf("%s sensor not found", key)
+		}
+	}
+	for _, key := range []string{"hc1_room_setpoint", "hc2_room_setpoint"} {
+		if !foundRoomSetpoints[key] {
 			t.Errorf("%s sensor not found", key)
 		}
 	}

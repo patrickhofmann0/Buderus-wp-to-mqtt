@@ -152,7 +152,7 @@ func (p *Poller) PollOnce(ctx context.Context) {
 		p.logger.Error("poll failed", "path", buderus.PathOutdoorTemperature, "error", err)
 	}
 	for _, circuit := range DefaultHeatingCircuits {
-		if err := p.pollHeatingCircuitMode(ctx, circuit); err != nil {
+		if err := p.pollHeatingCircuit(ctx, circuit); err != nil {
 			p.logger.Error("poll failed", "heatingCircuit", circuit.Key, "error", err)
 		}
 	}
@@ -163,24 +163,42 @@ func translateSummerWinterMode(mode string) (string, bool) {
 	return translated, ok
 }
 
-func (p *Poller) pollHeatingCircuitMode(ctx context.Context, circuit HeatingCircuit) error {
-	path := buderus.HeatingCircuitPath(circuit.Key, "currentSuWiMode")
-	resp, err := p.fetcher.FetchString(ctx, path)
+// HeatingCircuitPayload ist der JSON-Inhalt des Topics eines Heizkreises.
+type HeatingCircuitPayload struct {
+	SummerWinterMode string   `json:"summerWinterMode,omitempty"`
+	RoomSetpoint     *float64 `json:"roomSetpoint,omitempty"`
+}
+
+func (p *Poller) pollHeatingCircuit(ctx context.Context, circuit HeatingCircuit) error {
+	var state HeatingCircuitPayload
+
+	modePath := buderus.HeatingCircuitPath(circuit.Key, "currentSuWiMode")
+	modeResponse, err := p.fetcher.FetchString(ctx, modePath)
 	if err != nil {
-		return err
+		p.logger.Error("poll failed", "path", modePath, "error", err)
+	} else if mode, ok := translateSummerWinterMode(modeResponse.Value); ok {
+		state.SummerWinterMode = mode
+	} else {
+		p.logger.Warn("unknown heating circuit summer/winter mode", "heatingCircuit", circuit.Key, "value", modeResponse.Value)
 	}
 
-	mode, ok := translateSummerWinterMode(resp.Value)
-	if !ok {
-		p.logger.Warn("unknown heating circuit summer/winter mode", "heatingCircuit", circuit.Key, "value", resp.Value)
+	setpointPath := buderus.HeatingCircuitPath(circuit.Key, "currentRoomSetpoint")
+	setpointResponse, err := p.fetcher.FetchValue(ctx, setpointPath)
+	if err != nil {
+		p.logger.Error("poll failed", "path", setpointPath, "error", err)
+	} else if setpointResponse.SensorFaultState() == "off" {
+		p.logger.Warn("heating circuit is off; skipping room setpoint", "heatingCircuit", circuit.Key, "value", setpointResponse.Value)
+	} else {
+		state.RoomSetpoint = setpointResponse.Value
+	}
+
+	if state.SummerWinterMode == "" && state.RoomSetpoint == nil {
 		return nil
 	}
 
-	payload, err := json.Marshal(struct {
-		SummerWinterMode string `json:"summerWinterMode"`
-	}{SummerWinterMode: mode})
+	payload, err := json.Marshal(state)
 	if err != nil {
-		return fmt.Errorf("marshal heating circuit mode: %w", err)
+		return fmt.Errorf("marshal heating circuit state: %w", err)
 	}
 
 	topic := StateTopic(p.topicPrefix, Circuit{Key: circuit.Key})
@@ -345,6 +363,16 @@ func Sensors(topicPrefix string, circuits []Circuit) []mqtt.Sensor {
 			DeviceClass: "enum",
 			Options:     []string{"Winter", "Sommer", "Kühlen"},
 			Icon:        "mdi:sun-snowflake-variant",
+		})
+		sensors = append(sensors, mqtt.Sensor{
+			Key:         circuit.Key + "_room_setpoint",
+			Name:        circuit.Label + " Raumsollwert",
+			StateTopic:  topicPrefix + "/" + circuit.Key,
+			JSONField:   "roomSetpoint",
+			Unit:        "°C",
+			DeviceClass: "temperature",
+			StateClass:  "measurement",
+			Icon:        "mdi:home-thermometer",
 		})
 	}
 	return sensors
