@@ -18,6 +18,7 @@ import (
 const (
 	PathHeatingConsumption = "/heatSources/emon/chConsumption"
 	PathDHWConsumption     = "/heatSources/emon/dhwConsumption"
+	PathCompressorPower    = "/heatSources/compressor/powerElecActual"
 )
 
 // maxBodySize begrenzt die gelesene Antwortgröße (1 MiB).
@@ -59,6 +60,15 @@ func (c *Client) FetchEmon(ctx context.Context, path string) (EmonResponse, erro
 	var result EmonResponse
 	if err := c.getJSON(ctx, path, &result); err != nil {
 		return EmonResponse{}, err
+	}
+	return result, nil
+}
+
+// FetchValue ruft einen Endpunkt ab, der einen einzelnen numerischen Wert liefert.
+func (c *Client) FetchValue(ctx context.Context, path string) (ValueResponse, error) {
+	var result ValueResponse
+	if err := c.getJSON(ctx, path, &result); err != nil {
+		return ValueResponse{}, err
 	}
 	return result, nil
 }

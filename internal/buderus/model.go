@@ -21,6 +21,14 @@ type EmonResponse struct {
 	Unit   string     `json:"unit"`
 }
 
+// ValueResponse ist die Antwort eines Endpunkts, der einen einzelnen Messwert liefert.
+type ValueResponse struct {
+	ID    string   `json:"id"`
+	Type  string   `json:"type"`
+	Value *float64 `json:"value"`
+	Unit  string   `json:"unit"`
+}
+
 // EmonValues sind die Energiewerte in der Einheit aus EmonResponse.Unit.
 // Pointer (*float64) unterscheiden "nicht geliefert" (nil) von "0".
 type EmonValues struct {

@@ -63,6 +63,27 @@ func TestFetchEmon(t *testing.T) {
 	}
 }
 
+func TestFetchValue(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != PathCompressorPower {
+			t.Errorf("path = %q, want %q", r.URL.Path, PathCompressorPower)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"/heatSources/compressor/powerElecActual","type":"floatValue","value":460.0,"unit":"W"}`))
+	})
+
+	got, err := client.FetchValue(context.Background(), PathCompressorPower)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Value == nil || *got.Value != 460 {
+		t.Errorf("Value = %v, want 460", got.Value)
+	}
+	if got.Unit != "W" {
+		t.Errorf("Unit = %q, want W", got.Unit)
+	}
+}
+
 func TestFetchEmonErrorStatus(t *testing.T) {
 	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

@@ -11,12 +11,13 @@ services:
       - "1883:1883"
     command: mosquitto -c /mosquitto-no-auth.conf
 
-  buderus2mqtt:
-    build:
-      context: .
-      args:
-        VERSION: dev
-    image: buderus2mqtt:dev
-    env_file: .env
-    depends_on:
-      - mosquitto
+
+#  buderus2mqtt:
+#    build:
+#      context: .
+#      args:
+#        VERSION: dev
+#    image: buderus2mqtt:dev
+#    env_file: .env
+#    depends_on:
+#      - mosquitto

@@ -8,6 +8,7 @@ Aktuell werden abgefragt:
 |---|---|---|
 | Heizung | `/heatSources/emon/chConsumption` | Stromverbrauch (gesamt, Verdichter, Zuheizer), erzeugte Wärme (kWh) |
 | Warmwasser | `/heatSources/emon/dhwConsumption` | Stromverbrauch (gesamt, Verdichter, Zuheizer), erzeugte Wärme (kWh) |
+| Verdichterleistung | `/heatSources/compressor/powerElecActual` | aktuelle elektrische Leistung des Verdichters (W) |
 
 Manche Gateways (z. B. MX400) liefern keinen Gesamt-Stromverbrauch (`electricity`), sondern nur `compressor` und `eheater`. In diesem Fall wird `electricity` als Summe der beiden berechnet.
 
@@ -75,6 +76,7 @@ Beispiel mit `MQTT_TOPIC_PREFIX=buderus/wp`:
 | `buderus/wp/status` | `online` / `offline` (Last Will) | ja |
 | `buderus/wp/heating` | `{"electricity":6265.99,"compressor":6265.99,"eheater":0,"outputProduced":24797.11,"unit":"kWh"}` | ja |
 | `buderus/wp/dhw` | `{"electricity":1100.5,"compressor":1100.5,"eheater":0,"outputProduced":3382.54,"unit":"kWh"}` | ja |
+| `buderus/wp/power` | `{"compressorPower":460}` | ja |
 
 | Feld | Bedeutung |
 |---|---|
@@ -88,7 +90,7 @@ Fehlt ein Wert in der Antwort des Gateways, wird das Feld weggelassen. Mit `LOG_
 
 ### Home Assistant
 
-Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw`) vier Sensoren angelegt, gruppiert unter einem Gerät:
+Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw`) vier Energiesensoren sowie der Verdichter-Leistungssensor angelegt, gruppiert unter einem Gerät:
 
 | Sensor-Key | Name |
 |---|---|
@@ -96,6 +98,7 @@ Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw
 | `<bereich>_compressor` | Strom Verdichter |
 | `<bereich>_eheater` | Strom Zuheizer |
 | `<bereich>_output_produced` | erzeugte Wärme |
+| `compressor_power` | Leistung Verdichter (W) |
 
 Discovery-Topic: `<MQTT_HA_DISCOVERY_PREFIX>/sensor/<DEVICE_ID>/<sensor-key>/config`
 

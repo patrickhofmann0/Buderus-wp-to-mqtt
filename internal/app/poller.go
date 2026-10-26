@@ -12,13 +12,14 @@ import (
 	"github.com/patrickhofmann0/Buderus-wp-to-mqtt/internal/mqtt"
 )
 
-// EmonFetcher liest Energiezähler. *buderus.Client erfüllt dieses Interface automatisch.
+// Fetcher liest Energiezähler und einzelne Messwerte. *buderus.Client erfüllt dieses Interface automatisch.
 //
 // Für Java-Entwickler: In Go definiert der Nutzer das Interface (hier der Poller),
 // nicht der Anbieter. Eine Klasse muss es nicht mit "implements" deklarieren –
 // es reicht, die Methoden zu haben. Dadurch lässt sich im Test leicht ein Fake einsetzen.
-type EmonFetcher interface {
+type Fetcher interface {
 	FetchEmon(ctx context.Context, path string) (buderus.EmonResponse, error)
+	FetchValue(ctx context.Context, path string) (buderus.ValueResponse, error)
 }
 
 // Publisher veröffentlicht MQTT-Nachrichten. *mqtt.Client erfüllt dieses Interface.
@@ -54,9 +55,14 @@ type StatePayload struct {
 	Unit           string   `json:"unit"`
 }
 
+// PowerPayload ist der JSON-Inhalt des Leistungstopics.
+type PowerPayload struct {
+	CompressorPower *float64 `json:"compressorPower,omitempty"`
+}
+
 // Poller fragt die Werte regelmäßig ab und veröffentlicht sie.
 type Poller struct {
-	fetcher     EmonFetcher
+	fetcher     Fetcher
 	publisher   Publisher
 	topicPrefix string
 	circuits    []Circuit
@@ -64,7 +70,7 @@ type Poller struct {
 }
 
 // NewPoller erzeugt einen Poller. Abhängigkeiten werden übergeben (≈ Constructor Injection).
-func NewPoller(fetcher EmonFetcher, publisher Publisher, topicPrefix string, circuits []Circuit, logger *slog.Logger) *Poller {
+func NewPoller(fetcher Fetcher, publisher Publisher, topicPrefix string, circuits []Circuit, logger *slog.Logger) *Poller {
 	return &Poller{
 		fetcher:     fetcher,
 		publisher:   publisher,
@@ -77,6 +83,11 @@ func NewPoller(fetcher EmonFetcher, publisher Publisher, topicPrefix string, cir
 // StateTopic liefert das Topic, auf dem die Werte eines Circuits veröffentlicht werden.
 func StateTopic(topicPrefix string, c Circuit) string {
 	return topicPrefix + "/" + c.Key
+}
+
+// PowerTopic liefert das Topic für aktuelle Leistungswerte.
+func PowerTopic(topicPrefix string) string {
+	return topicPrefix + "/power"
 }
 
 // Run fragt sofort und danach im angegebenen Intervall ab, bis ctx beendet wird.
@@ -104,6 +115,28 @@ func (p *Poller) PollOnce(ctx context.Context) {
 			p.logger.Error("poll failed", "circuit", c.Key, "error", err)
 		}
 	}
+	if err := p.pollPower(ctx); err != nil {
+		p.logger.Error("poll failed", "path", buderus.PathCompressorPower, "error", err)
+	}
+}
+
+func (p *Poller) pollPower(ctx context.Context) error {
+	resp, err := p.fetcher.FetchValue(ctx, buderus.PathCompressorPower)
+	if err != nil {
+		return err
+	}
+
+	payload, err := json.Marshal(PowerPayload{CompressorPower: resp.Value})
+	if err != nil {
+		return fmt.Errorf("marshal power state: %w", err)
+	}
+
+	topic := PowerTopic(p.topicPrefix)
+	if err := p.publisher.Publish(ctx, topic, payload, true); err != nil {
+		return err
+	}
+	p.logger.Debug("published", "topic", topic, "payload", string(payload))
+	return nil
 }
 
 func (p *Poller) pollCircuit(ctx context.Context, c Circuit) error {
@@ -162,5 +195,15 @@ func Sensors(topicPrefix string, circuits []Circuit) []mqtt.Sensor {
 			})
 		}
 	}
+	sensors = append(sensors, mqtt.Sensor{
+		Key:         "compressor_power",
+		Name:        "Leistung Verdichter",
+		StateTopic:  PowerTopic(topicPrefix),
+		JSONField:   "compressorPower",
+		Unit:        "W",
+		DeviceClass: "power",
+		StateClass:  "measurement",
+		Icon:        "mdi:heat-pump",
+	})
 	return sensors
 }
