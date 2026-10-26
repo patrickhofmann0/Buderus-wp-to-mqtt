@@ -105,6 +105,57 @@ func TestFetchModulationValue(t *testing.T) {
 	}
 }
 
+func TestFetchOutdoorTemperature(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != PathOutdoorTemperature {
+			t.Errorf("path = %q, want %q", r.URL.Path, PathOutdoorTemperature)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"/system/sensors/temperatures/outdoor_t1","type":"floatValue","value":7.5,"unitOfMeasure":"C","state":[{"open":-32768},{"short":32767}]}`))
+	})
+
+	got, err := client.FetchValue(context.Background(), PathOutdoorTemperature)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Value == nil || *got.Value != 7.5 {
+		t.Errorf("Value = %v, want 7.5", got.Value)
+	}
+	if got.UnitOfMeasure != "C" {
+		t.Errorf("UnitOfMeasure = %q, want C", got.UnitOfMeasure)
+	}
+	if got.SensorFault() {
+		t.Errorf("valid outdoor temperature reported as sensor fault (%q)", got.SensorFaultState())
+	}
+}
+
+func TestValueResponseSensorFault(t *testing.T) {
+	ptr := func(value float64) *float64 { return &value }
+	response := ValueResponse{
+		State: []map[string]float64{{"open": -32768}, {"short": 32767}},
+	}
+	tests := []struct {
+		name      string
+		value     *float64
+		wantFault string
+	}{
+		{name: "normal", value: ptr(7.5)},
+		{name: "open sensor", value: ptr(-32768), wantFault: "open"},
+		{name: "short sensor", value: ptr(32767), wantFault: "short"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response.Value = tt.value
+			if got := response.SensorFaultState(); got != tt.wantFault {
+				t.Errorf("SensorFaultState() = %q, want %q", got, tt.wantFault)
+			}
+			if got := response.SensorFault(); got != (tt.wantFault != "") {
+				t.Errorf("SensorFault() = %t, want %t", got, tt.wantFault != "")
+			}
+		})
+	}
+}
+
 func TestFetchEmonErrorStatus(t *testing.T) {
 	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

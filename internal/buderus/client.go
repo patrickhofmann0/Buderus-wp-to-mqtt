@@ -20,6 +20,7 @@ const (
 	PathDHWConsumption     = "/heatSources/emon/dhwConsumption"
 	PathCompressorPower    = "/heatSources/compressor/powerElecActual"
 	PathModulation         = "/heatSources/actualModulation"
+	PathOutdoorTemperature = "/system/sensors/temperatures/outdoor_t1"
 )
 
 // maxBodySize begrenzt die gelesene Antwortgröße (1 MiB).

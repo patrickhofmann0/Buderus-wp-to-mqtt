@@ -1,6 +1,6 @@
 # Buderus-wp-to-mqtt
 
-Ein Dienst, der die Energiezähler einer Buderus-Wärmepumpe über die lokale REST-API des Gateways (z. B. **MX400**, **K 40 RF**) abfragt und per **MQTT** veröffentlicht. Optional legt er die Sensoren per **Home-Assistant-MQTT-Discovery** automatisch an.
+Ein Dienst, der Energiezähler und Messwerte einer Buderus-Wärmepumpe über die lokale REST-API des Gateways (z. B. **MX400**, **K 40 RF**) abfragt und per **MQTT** veröffentlicht. Optional legt er die Sensoren per **Home-Assistant-MQTT-Discovery** automatisch an.
 
 Aktuell werden abgefragt:
 
@@ -9,6 +9,8 @@ Aktuell werden abgefragt:
 | Heizung | `/heatSources/emon/chConsumption` | Stromverbrauch (gesamt, Verdichter, Zuheizer), erzeugte Wärme (kWh) |
 | Warmwasser | `/heatSources/emon/dhwConsumption` | Stromverbrauch (gesamt, Verdichter, Zuheizer), erzeugte Wärme (kWh) |
 | Verdichterleistung | `/heatSources/compressor/powerElecActual` | aktuelle elektrische Leistung des Verdichters (W) |
+| Modulation | `/heatSources/actualModulation` | aktuelle Modulation (%) |
+| Außentemperatur | `/system/sensors/temperatures/outdoor_t1` | Außentemperatur (°C) |
 
 Manche Gateways (z. B. MX400) liefern keinen Gesamt-Stromverbrauch (`electricity`), sondern nur `compressor` und `eheater`. In diesem Fall wird `electricity` als Summe der beiden berechnet.
 
@@ -76,7 +78,8 @@ Beispiel mit `MQTT_TOPIC_PREFIX=buderus/wp`:
 | `buderus/wp/status` | `online` / `offline` (Last Will) | ja |
 | `buderus/wp/heating` | `{"electricity":6265.99,"compressor":6265.99,"eheater":0,"outputProduced":24797.11,"unit":"kWh"}` | ja |
 | `buderus/wp/dhw` | `{"electricity":1100.5,"compressor":1100.5,"eheater":0,"outputProduced":3382.54,"unit":"kWh"}` | ja |
-| `buderus/wp/power` | `{"compressorPower":460}` | ja |
+| `buderus/wp/power` | `{"compressorPower":460,"modulation":13}` | ja |
+| `buderus/wp/temperatures` | `{"outdoor":7.5}` | ja |
 
 | Feld | Bedeutung |
 |---|---|
@@ -85,12 +88,15 @@ Beispiel mit `MQTT_TOPIC_PREFIX=buderus/wp`:
 | `eheater` | Stromverbrauch des elektrischen Zuheizers |
 | `burner` | Brenner (nur Hybridsysteme) |
 | `outputProduced` | Erzeugte Wärme |
+| `compressorPower` | Aktuelle elektrische Leistung des Verdichters in W |
+| `modulation` | Aktuelle Modulation in % |
+| `outdoor` | Außentemperatur in °C |
 
 Fehlt ein Wert in der Antwort des Gateways, wird das Feld weggelassen. Mit `LOG_LEVEL=debug` wird die Rohantwort des Gateways geloggt.
 
 ### Home Assistant
 
-Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw`) vier Energiesensoren sowie der Verdichter-Leistungssensor angelegt, gruppiert unter einem Gerät:
+Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw`) vier Energiesensoren sowie Sensoren für Verdichterleistung, Modulation und Außentemperatur angelegt, gruppiert unter einem Gerät:
 
 | Sensor-Key | Name |
 |---|---|
@@ -99,10 +105,14 @@ Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw
 | `<bereich>_eheater` | Strom Zuheizer |
 | `<bereich>_output_produced` | erzeugte Wärme |
 | `compressor_power` | Leistung Verdichter (W) |
+| `modulation` | Modulation (%) |
+| `outdoor_temperature` | Außentemperatur (°C) |
 
 Discovery-Topic: `<MQTT_HA_DISCOVERY_PREFIX>/sensor/<DEVICE_ID>/<sensor-key>/config`
 
-Die Sensoren haben `device_class: energy` und `state_class: total_increasing` und können direkt im **Energie-Dashboard** verwendet werden.
+Die Energiesensoren haben `device_class: energy` und `state_class: total_increasing` und können direkt im **Energie-Dashboard** verwendet werden. Leistung, Modulation und Temperatur verwenden `state_class: measurement`.
+
+Meldet der Außenfühler einen `open`- oder `short`-Fehlerwert, wird kein neuer Temperaturwert veröffentlicht; der letzte retained Wert bleibt bestehen.
 
 ## Lokale Entwicklung
 

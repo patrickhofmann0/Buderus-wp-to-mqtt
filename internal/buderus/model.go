@@ -23,10 +23,32 @@ type EmonResponse struct {
 
 // ValueResponse ist die Antwort eines Endpunkts, der einen einzelnen Messwert liefert.
 type ValueResponse struct {
-	ID    string   `json:"id"`
-	Type  string   `json:"type"`
-	Value *float64 `json:"value"`
-	Unit  string   `json:"unit"`
+	ID            string               `json:"id"`
+	Type          string               `json:"type"`
+	Value         *float64             `json:"value"`
+	Unit          string               `json:"unit"`
+	UnitOfMeasure string               `json:"unitOfMeasure"`
+	State         []map[string]float64 `json:"state"`
+}
+
+// SensorFault meldet, ob der Wert einem vom Gateway als Fehlerwert markierten Zustand entspricht.
+func (r ValueResponse) SensorFault() bool {
+	return r.SensorFaultState() != ""
+}
+
+// SensorFaultState liefert den Namen des fehlerhaften Sensorzustands, z. B. "open" oder "short".
+func (r ValueResponse) SensorFaultState() string {
+	if r.Value == nil {
+		return ""
+	}
+	for _, state := range r.State {
+		for name, value := range state {
+			if *r.Value == value {
+				return name
+			}
+		}
+	}
+	return ""
 }
 
 // EmonValues sind die Energiewerte in der Einheit aus EmonResponse.Unit.

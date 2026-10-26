@@ -61,6 +61,11 @@ type PowerPayload struct {
 	Modulation      *float64 `json:"modulation,omitempty"`
 }
 
+// TemperaturesPayload ist der JSON-Inhalt des Temperaturtopics.
+type TemperaturesPayload struct {
+	Outdoor *float64 `json:"outdoor,omitempty"`
+}
+
 // Poller fragt die Werte regelmäßig ab und veröffentlicht sie.
 type Poller struct {
 	fetcher     Fetcher
@@ -91,6 +96,11 @@ func PowerTopic(topicPrefix string) string {
 	return topicPrefix + "/power"
 }
 
+// TemperaturesTopic liefert das Topic für Temperaturwerte.
+func TemperaturesTopic(topicPrefix string) string {
+	return topicPrefix + "/temperatures"
+}
+
 // Run fragt sofort und danach im angegebenen Intervall ab, bis ctx beendet wird.
 // Fehler werden geloggt; das Programm läuft weiter.
 func (p *Poller) Run(ctx context.Context, interval time.Duration) {
@@ -118,6 +128,9 @@ func (p *Poller) PollOnce(ctx context.Context) {
 	}
 	if err := p.pollPower(ctx); err != nil {
 		p.logger.Error("poll failed", "group", "power", "error", err)
+	}
+	if err := p.pollTemperatures(ctx); err != nil {
+		p.logger.Error("poll failed", "path", buderus.PathOutdoorTemperature, "error", err)
 	}
 }
 
@@ -148,6 +161,32 @@ func (p *Poller) pollPower(ctx context.Context) error {
 	}
 
 	topic := PowerTopic(p.topicPrefix)
+	if err := p.publisher.Publish(ctx, topic, payload, true); err != nil {
+		return err
+	}
+	p.logger.Debug("published", "topic", topic, "payload", string(payload))
+	return nil
+}
+
+func (p *Poller) pollTemperatures(ctx context.Context) error {
+	resp, err := p.fetcher.FetchValue(ctx, buderus.PathOutdoorTemperature)
+	if err != nil {
+		return err
+	}
+	if resp.SensorFault() {
+		p.logger.Warn("outdoor temperature sensor fault", "state", resp.SensorFaultState(), "value", *resp.Value)
+		return nil
+	}
+	if resp.Value == nil {
+		return nil
+	}
+
+	payload, err := json.Marshal(TemperaturesPayload{Outdoor: resp.Value})
+	if err != nil {
+		return fmt.Errorf("marshal temperature state: %w", err)
+	}
+
+	topic := TemperaturesTopic(p.topicPrefix)
 	if err := p.publisher.Publish(ctx, topic, payload, true); err != nil {
 		return err
 	}
@@ -229,6 +268,16 @@ func Sensors(topicPrefix string, circuits []Circuit) []mqtt.Sensor {
 		Unit:       "%",
 		StateClass: "measurement",
 		Icon:       "mdi:sine-wave",
+	})
+	sensors = append(sensors, mqtt.Sensor{
+		Key:         "outdoor_temperature",
+		Name:        "Außentemperatur",
+		StateTopic:  TemperaturesTopic(topicPrefix),
+		JSONField:   "outdoor",
+		Unit:        "°C",
+		DeviceClass: "temperature",
+		StateClass:  "measurement",
+		Icon:        "mdi:thermometer",
 	})
 	return sensors
 }
