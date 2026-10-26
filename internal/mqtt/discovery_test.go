@@ -60,6 +60,9 @@ func TestBuildDiscoveryMessages(t *testing.T) {
 	if _, ok := payload["options"]; ok {
 		t.Error("empty options should be omitted")
 	}
+	if _, ok := payload["via_device"]; ok {
+		t.Error("via_device should be omitted from the top-level payload")
+	}
 }
 
 func TestBuildDiscoveryMessagesIncludesEnumOptions(t *testing.T) {
@@ -92,5 +95,53 @@ func TestBuildDiscoveryMessagesIncludesEnumOptions(t *testing.T) {
 		if payload.Options[i] != value {
 			t.Errorf("options[%d] = %q, want %q", i, payload.Options[i], value)
 		}
+	}
+}
+
+func TestBuildDiscoveryMessagesForSubDeviceKeepsEntityIdentity(t *testing.T) {
+	device := Device{ID: "buderus_wp", Name: "Buderus Wärmepumpe", Manufacturer: "Buderus", Model: "Wärmepumpe"}
+	sensor := Sensor{
+		Key:        "heating_electricity",
+		Name:       "Stromverbrauch",
+		StateTopic: "buderus/wp/heating",
+		JSONField:  "electricity",
+		SubDevice:  &SubDevice{Key: "heating", Name: "Heizung"},
+	}
+
+	messages, err := BuildDiscoveryMessages("homeassistant", "buderus/wp/status", device, []Sensor{sensor})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	message := messages[0]
+	if want := "homeassistant/sensor/buderus_wp/heating_electricity/config"; message.Topic != want {
+		t.Errorf("Topic = %q, want %q", message.Topic, want)
+	}
+
+	var payload struct {
+		UniqueID        string `json:"unique_id"`
+		DefaultEntityID string `json:"default_entity_id"`
+		Device          struct {
+			Identifiers []string `json:"identifiers"`
+			Name        string   `json:"name"`
+			ViaDevice   string   `json:"via_device"`
+		} `json:"device"`
+	}
+	if err := json.Unmarshal(message.Payload, &payload); err != nil {
+		t.Fatalf("invalid discovery JSON: %v", err)
+	}
+	if payload.UniqueID != "buderus_wp_heating_electricity" {
+		t.Errorf("unique_id = %q, want stable root-based ID", payload.UniqueID)
+	}
+	if payload.DefaultEntityID != "sensor.buderus_wp_heating_electricity" {
+		t.Errorf("default_entity_id = %q, want stable entity ID", payload.DefaultEntityID)
+	}
+	if payload.Device.ViaDevice != "buderus_wp" {
+		t.Errorf("device.via_device = %q, want buderus_wp", payload.Device.ViaDevice)
+	}
+	if len(payload.Device.Identifiers) != 1 || payload.Device.Identifiers[0] != "buderus_wp_heating" {
+		t.Errorf("device identifiers = %v, want [buderus_wp_heating]", payload.Device.Identifiers)
+	}
+	if payload.Device.Name != "Heizung" {
+		t.Errorf("device name = %q, want Heizung", payload.Device.Name)
 	}
 }

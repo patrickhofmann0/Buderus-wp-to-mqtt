@@ -54,8 +54,8 @@ var DefaultCircuits = []Circuit{
 
 // DefaultHeatingCircuits sind die fest unterstützten Heizkreise.
 var DefaultHeatingCircuits = []HeatingCircuit{
-	{Key: "hc1", Label: "HK1"},
-	{Key: "hc2", Label: "HK2"},
+	{Key: "hc1", Label: "Heizkreis 1"},
+	{Key: "hc2", Label: "Heizkreis 2"},
 }
 
 // DetectHeatingCircuits erkennt beim Start, welche Heizkreise einen Mischer haben.
@@ -383,13 +383,14 @@ func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCi
 		for _, f := range fields {
 			sensors = append(sensors, mqtt.Sensor{
 				Key:         c.Key + "_" + f.keySuffix,
-				Name:        c.Label + " " + f.label,
+				Name:        f.label,
 				StateTopic:  StateTopic(topicPrefix, c),
 				JSONField:   f.jsonField,
 				Unit:        "kWh",
 				DeviceClass: "energy",
 				StateClass:  "total_increasing",
 				Icon:        f.icon,
+				SubDevice:   &mqtt.SubDevice{Key: c.Key, Name: c.Label},
 			})
 		}
 	}
@@ -423,15 +424,16 @@ func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCi
 		Icon:        "mdi:thermometer",
 	})
 	for _, temperature := range []struct {
-		key   string
-		name  string
-		field string
-		icon  string
+		key       string
+		name      string
+		field     string
+		icon      string
+		subDevice *mqtt.SubDevice
 	}{
 		{key: "supply_temperature", name: "Vorlauftemperatur", field: "supply", icon: "mdi:thermometer-water"},
 		{key: "return_temperature", name: "Rücklauftemperatur", field: "return", icon: "mdi:thermometer-water"},
-		{key: "dhw_temperature", name: "Warmwasser Ist", field: "dhwActual", icon: "mdi:water-thermometer"},
-		{key: "dhw_setpoint", name: "Warmwasser Soll", field: "dhwSetpoint", icon: "mdi:thermometer-chevron-up"},
+		{key: "dhw_temperature", name: "Ist-Temperatur", field: "dhwActual", icon: "mdi:water-thermometer", subDevice: &mqtt.SubDevice{Key: "dhw", Name: "Warmwasser"}},
+		{key: "dhw_setpoint", name: "Solltemperatur", field: "dhwSetpoint", icon: "mdi:thermometer-chevron-up", subDevice: &mqtt.SubDevice{Key: "dhw", Name: "Warmwasser"}},
 	} {
 		sensors = append(sensors, mqtt.Sensor{
 			Key:         temperature.key,
@@ -442,39 +444,54 @@ func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCi
 			DeviceClass: "temperature",
 			StateClass:  "measurement",
 			Icon:        temperature.icon,
+			SubDevice:   temperature.subDevice,
 		})
 	}
 	for _, circuit := range heatingCircuits {
 		sensors = append(sensors, mqtt.Sensor{
 			Key:         circuit.Key + "_summer_winter_mode",
-			Name:        circuit.Label + " Sommer/Winter",
+			Name:        "Sommer/Winter",
 			StateTopic:  topicPrefix + "/" + circuit.Key,
 			JSONField:   "summerWinterMode",
 			DeviceClass: "enum",
 			Options:     []string{"Winter", "Sommer", "Kühlen"},
 			Icon:        "mdi:sun-snowflake-variant",
+			SubDevice:   &mqtt.SubDevice{Key: circuit.Key, Name: circuit.Label},
 		})
 		sensors = append(sensors, mqtt.Sensor{
 			Key:         circuit.Key + "_room_setpoint",
-			Name:        circuit.Label + " Raumsollwert",
+			Name:        "Raumsollwert",
 			StateTopic:  topicPrefix + "/" + circuit.Key,
 			JSONField:   "roomSetpoint",
 			Unit:        "°C",
 			DeviceClass: "temperature",
 			StateClass:  "measurement",
 			Icon:        "mdi:home-thermometer",
+			SubDevice:   &mqtt.SubDevice{Key: circuit.Key, Name: circuit.Label},
 		})
 		if circuit.HasMixer {
 			sensors = append(sensors, mqtt.Sensor{
 				Key:        circuit.Key + "_mixer_position",
-				Name:       circuit.Label + " Mischerstellung",
+				Name:       "Mischerstellung",
 				StateTopic: topicPrefix + "/" + circuit.Key,
 				JSONField:  "mixerPosition",
 				Unit:       "%",
 				StateClass: "measurement",
 				Icon:       "mdi:valve",
+				SubDevice:  &mqtt.SubDevice{Key: circuit.Key, Name: circuit.Label},
 			})
 		}
 	}
-	return sensors
+
+	// Home Assistant muss das Hauptgerät kennen, bevor es Untergeräte über via_device verknüpfen kann.
+	mainDeviceSensors := make([]mqtt.Sensor, 0, len(sensors))
+	subDeviceSensors := make([]mqtt.Sensor, 0, len(sensors))
+	for _, sensor := range sensors {
+		if sensor.SubDevice == nil {
+			mainDeviceSensors = append(mainDeviceSensors, sensor)
+		} else {
+			subDeviceSensors = append(subDeviceSensors, sensor)
+		}
+	}
+	return append(mainDeviceSensors, subDeviceSensors...)
 }

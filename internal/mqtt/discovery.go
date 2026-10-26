@@ -13,6 +13,12 @@ type Device struct {
 	Model        string
 }
 
+// SubDevice beschreibt ein Untergerät, das über das Hauptgerät verbunden ist.
+type SubDevice struct {
+	Key  string
+	Name string
+}
+
 // Sensor beschreibt einen Messwert, für den eine Discovery-Nachricht erzeugt wird.
 type Sensor struct {
 	// Key ist eindeutig pro Gerät, z. B. "heating_electricity".
@@ -27,6 +33,7 @@ type Sensor struct {
 	StateClass  string
 	Icon        string
 	Options     []string
+	SubDevice   *SubDevice
 }
 
 // Message ist eine fertige MQTT-Nachricht.
@@ -58,6 +65,7 @@ type discoveryDevice struct {
 	Name         string   `json:"name"`
 	Manufacturer string   `json:"manufacturer,omitempty"`
 	Model        string   `json:"model,omitempty"`
+	ViaDevice    string   `json:"via_device,omitempty"`
 }
 
 // BuildDiscoveryMessages erzeugt eine retained Discovery-Nachricht pro Sensor.
@@ -68,6 +76,16 @@ func BuildDiscoveryMessages(discoveryPrefix, availabilityTopic string, device De
 
 	for _, s := range sensors {
 		uniqueID := device.ID + "_" + s.Key
+		entityDeviceID := device.ID
+		entityDeviceName := device.Name
+		entityDeviceModel := device.Model
+		viaDevice := ""
+		if s.SubDevice != nil {
+			entityDeviceID = device.ID + "_" + s.SubDevice.Key
+			entityDeviceName = s.SubDevice.Name
+			entityDeviceModel = ""
+			viaDevice = device.ID
+		}
 		payload := discoveryPayload{
 			Name:              s.Name,
 			UniqueID:          uniqueID,
@@ -81,10 +99,11 @@ func BuildDiscoveryMessages(discoveryPrefix, availabilityTopic string, device De
 			Options:           s.Options,
 			AvailabilityTopic: availabilityTopic,
 			Device: discoveryDevice{
-				Identifiers:  []string{device.ID},
-				Name:         device.Name,
+				Identifiers:  []string{entityDeviceID},
+				Name:         entityDeviceName,
 				Manufacturer: device.Manufacturer,
-				Model:        device.Model,
+				Model:        entityDeviceModel,
+				ViaDevice:    viaDevice,
 			},
 		}
 

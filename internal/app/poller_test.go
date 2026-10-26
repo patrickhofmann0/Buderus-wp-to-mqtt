@@ -348,10 +348,18 @@ func TestTranslateSummerWinterMode(t *testing.T) {
 }
 
 func TestSensors(t *testing.T) {
-	heatingCircuits := []HeatingCircuit{{Key: "hc1", Label: "HK1"}, {Key: "hc2", Label: "HK2", HasMixer: true}}
+	heatingCircuits := []HeatingCircuit{{Key: "hc1", Label: "Heizkreis 1"}, {Key: "hc2", Label: "Heizkreis 2", HasMixer: true}}
 	sensors := Sensors("buderus/wp", DefaultCircuits, heatingCircuits)
 	if len(sensors) != 20 {
 		t.Fatalf("got %d sensors, want 20", len(sensors))
+	}
+	seenSubDevice := false
+	for _, sensor := range sensors {
+		if sensor.SubDevice != nil {
+			seenSubDevice = true
+		} else if seenSubDevice {
+			t.Errorf("main-device sensor %q appears after a sub-device sensor", sensor.Key)
+		}
 	}
 
 	keys := map[string]bool{}
@@ -383,11 +391,25 @@ func TestSensors(t *testing.T) {
 	foundHeatingModes := map[string]bool{}
 	foundRoomSetpoints := map[string]bool{}
 	foundMixer := false
+	foundHeatingDevice, foundDHWDevice, foundHeatingCircuitDevice := false, false, false
+	foundMainDevices := map[string]bool{}
 	roomSetpointTopics := map[string]string{
 		"hc1_room_setpoint": "buderus/wp/hc1",
 		"hc2_room_setpoint": "buderus/wp/hc2",
 	}
 	for _, s := range sensors {
+		if s.Key == "heating_electricity" {
+			foundHeatingDevice = s.Name == "Stromverbrauch" && s.SubDevice != nil && s.SubDevice.Key == "heating" && s.SubDevice.Name == "Heizung"
+		}
+		if s.Key == "dhw_temperature" {
+			foundDHWDevice = s.Name == "Ist-Temperatur" && s.SubDevice != nil && s.SubDevice.Key == "dhw" && s.SubDevice.Name == "Warmwasser"
+		}
+		if s.Key == "outdoor_temperature" || s.Key == "compressor_power" {
+			foundMainDevices[s.Key] = s.SubDevice == nil
+		}
+		if s.Key == "hc1_summer_winter_mode" {
+			foundHeatingCircuitDevice = s.Name == "Sommer/Winter" && s.SubDevice != nil && s.SubDevice.Key == "hc1" && s.SubDevice.Name == "Heizkreis 1"
+		}
 		if s.Key == "compressor_power" {
 			foundCompressorPower = true
 			if s.StateTopic != "buderus/wp/power" || s.JSONField != "compressorPower" || s.Unit != "W" || s.DeviceClass != "power" || s.StateClass != "measurement" {
@@ -460,5 +482,19 @@ func TestSensors(t *testing.T) {
 	}
 	if !foundMixer {
 		t.Error("hc2_mixer_position sensor not found")
+	}
+	if !foundHeatingDevice {
+		t.Error("heating energy sensor should use the Heizung sub-device and a short name")
+	}
+	if !foundDHWDevice {
+		t.Error("DHW temperature should use the Warmwasser sub-device and a short name")
+	}
+	for _, key := range []string{"outdoor_temperature", "compressor_power"} {
+		if !foundMainDevices[key] {
+			t.Errorf("%s should remain on the main device", key)
+		}
+	}
+	if !foundHeatingCircuitDevice {
+		t.Error("heating circuit sensor should use its sub-device and a short name")
 	}
 }

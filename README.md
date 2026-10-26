@@ -114,7 +114,7 @@ Fehlt ein Wert in der Antwort des Gateways, wird das Feld weggelassen. Mit `LOG_
 
 ### Home Assistant
 
-Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw`) vier Energiesensoren sowie Sensoren für Verdichterleistung, Modulation, fünf Temperaturwerte, die beiden Heizkreis-Modi und die Raumsollwerte angelegt, gruppiert unter einem Gerät:
+Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw`) vier Energiesensoren sowie Sensoren für Verdichterleistung, Modulation, fünf Temperaturwerte, die beiden Heizkreis-Modi und die Raumsollwerte angelegt. Die folgende Tabelle listet die Sensor-Keys und Anzeigenamen:
 
 | Sensor-Key | Name |
 |---|---|
@@ -127,15 +127,27 @@ Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw
 | `outdoor_temperature` | Außentemperatur (°C) |
 | `supply_temperature` | Vorlauftemperatur (°C) |
 | `return_temperature` | Rücklauftemperatur (°C) |
-| `dhw_temperature` | Warmwasser Ist (°C) |
-| `dhw_setpoint` | Warmwasser Soll (°C) |
-| `hc1_summer_winter_mode` | HK1 Sommer/Winter (Winter, Sommer, Kühlen) |
-| `hc2_summer_winter_mode` | HK2 Sommer/Winter (Winter, Sommer, Kühlen) |
-| `hc1_room_setpoint` | HK1 Raumsollwert (°C) |
-| `hc2_room_setpoint` | HK2 Raumsollwert (°C) |
+| `dhw_temperature` | Ist-Temperatur (°C) |
+| `dhw_setpoint` | Solltemperatur (°C) |
+| `hc1_summer_winter_mode` | Sommer/Winter (Winter, Sommer, Kühlen) |
+| `hc2_summer_winter_mode` | Sommer/Winter (Winter, Sommer, Kühlen) |
+| `hc1_room_setpoint` | Raumsollwert (°C) |
+| `hc2_room_setpoint` | Raumsollwert (°C) |
 | `<hc>_mixer_position` | Mischerstellung (%) – wird nur für erkannte Heizkreise mit Mischer angelegt |
 
 Discovery-Topic: `<MQTT_HA_DISCOVERY_PREFIX>/sensor/<DEVICE_ID>/<sensor-key>/config`
+
+Die Sensoren sind in Home Assistant auf mehrere Geräte verteilt. Untergeräte sind über `via_device` mit der Wärmepumpe verbunden:
+
+| Home-Assistant-Gerät | Zugeordnete Werte | Geräte-ID |
+|---|---|---|
+| Buderus Wärmepumpe (Hauptgerät) | Verdichterleistung, Modulation, Vorlauf, Rücklauf und Außentemperatur | `<DEVICE_ID>` |
+| Heizung | Energiezähler Heizung | `<DEVICE_ID>_heating` |
+| Warmwasser | Energiezähler und Warmwasser-Ist-/Solltemperatur | `<DEVICE_ID>_dhw` |
+| Heizkreis 1 | Modus und Raumsollwert | `<DEVICE_ID>_hc1` |
+| Heizkreis 2 | Modus, Raumsollwert und ggf. Mischerstellung | `<DEVICE_ID>_hc2` |
+
+Discovery-Topics und Entitäts-IDs bleiben weiterhin auf `<DEVICE_ID>` basierend. Dadurch bleiben `unique_id`, Entity-IDs und die Zuordnung vorhandener Statistiken erhalten; nur die Gerätezuordnung ändert sich. Sensor-Namen enthalten nicht erneut den Gerätenamen, da Home Assistant diesen im Kontext des Geräts ergänzt.
 
 Die Energiesensoren haben `device_class: energy` und `state_class: total_increasing` und können direkt im **Energie-Dashboard** verwendet werden. Leistung, Modulation, Temperatur und Raumsollwerte verwenden `state_class: measurement`; die Modus-Sensoren sind Enums mit den Optionen „Winter“, „Sommer“ und „Kühlen“.
 
