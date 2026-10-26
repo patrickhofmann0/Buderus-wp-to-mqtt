@@ -1,4 +1,4 @@
-// Command buderus2mqtt liest Energiezähler einer Buderus-Wärmepumpe und veröffentlicht sie per MQTT.
+// Command buderus2mqtt liest Messwerte einer Buderus-Wärmepumpe und veröffentlicht sie per MQTT.
 package main
 
 import (

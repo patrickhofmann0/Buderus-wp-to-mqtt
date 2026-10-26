@@ -75,6 +75,20 @@ func (c *Client) FetchValue(ctx context.Context, path string) (ValueResponse, er
 	return result, nil
 }
 
+// FetchString ruft einen Endpunkt ab, der einen einzelnen Textwert liefert.
+func (c *Client) FetchString(ctx context.Context, path string) (StringResponse, error) {
+	var result StringResponse
+	if err := c.getJSON(ctx, path, &result); err != nil {
+		return StringResponse{}, err
+	}
+	return result, nil
+}
+
+// HeatingCircuitPath erzeugt einen API-Pfad für einen Heizkreis.
+func HeatingCircuitPath(heatingCircuit, resource string) string {
+	return fmt.Sprintf("/heatingCircuits/%s/%s", heatingCircuit, resource)
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, target any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {

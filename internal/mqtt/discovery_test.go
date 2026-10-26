@@ -57,4 +57,40 @@ func TestBuildDiscoveryMessages(t *testing.T) {
 	if _, ok := payload["icon"]; ok {
 		t.Error("empty icon should be omitted")
 	}
+	if _, ok := payload["options"]; ok {
+		t.Error("empty options should be omitted")
+	}
+}
+
+func TestBuildDiscoveryMessagesIncludesEnumOptions(t *testing.T) {
+	messages, err := BuildDiscoveryMessages("homeassistant", "buderus/wp/status", Device{ID: "buderus_wp", Name: "Buderus"}, []Sensor{{
+		Key:         "hc1_summer_winter_mode",
+		Name:        "HK1 Sommer/Winter",
+		StateTopic:  "buderus/wp/hc1",
+		JSONField:   "summerWinterMode",
+		DeviceClass: "enum",
+		Options:     []string{"Winter", "Sommer", "Kühlen"},
+	}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var payload struct {
+		DeviceClass string   `json:"device_class"`
+		Options     []string `json:"options"`
+	}
+	if err := json.Unmarshal(messages[0].Payload, &payload); err != nil {
+		t.Fatalf("invalid discovery JSON: %v", err)
+	}
+	if payload.DeviceClass != "enum" {
+		t.Errorf("device_class = %q, want enum", payload.DeviceClass)
+	}
+	want := []string{"Winter", "Sommer", "Kühlen"}
+	if len(payload.Options) != len(want) {
+		t.Fatalf("options = %v, want %v", payload.Options, want)
+	}
+	for i, value := range want {
+		if payload.Options[i] != value {
+			t.Errorf("options[%d] = %q, want %q", i, payload.Options[i], value)
+		}
+	}
 }

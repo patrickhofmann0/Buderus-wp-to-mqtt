@@ -129,6 +129,34 @@ func TestFetchOutdoorTemperature(t *testing.T) {
 	}
 }
 
+func TestFetchStringHeatingCircuitMode(t *testing.T) {
+	path := HeatingCircuitPath("hc1", "currentSuWiMode")
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != path {
+			t.Errorf("path = %q, want %q", r.URL.Path, path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"/heatingCircuits/hc1/currentSuWiMode","type":"stringValue","value":"forced","allowedValues":["forced","off","cooling"]}`))
+	})
+
+	got, err := client.FetchString(context.Background(), path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Value != "forced" {
+		t.Errorf("Value = %q, want forced", got.Value)
+	}
+	wantValues := []string{"forced", "off", "cooling"}
+	if len(got.AllowedValues) != len(wantValues) {
+		t.Fatalf("AllowedValues = %v, want %v", got.AllowedValues, wantValues)
+	}
+	for i, want := range wantValues {
+		if got.AllowedValues[i] != want {
+			t.Errorf("AllowedValues[%d] = %q, want %q", i, got.AllowedValues[i], want)
+		}
+	}
+}
+
 func TestValueResponseSensorFault(t *testing.T) {
 	ptr := func(value float64) *float64 { return &value }
 	response := ValueResponse{

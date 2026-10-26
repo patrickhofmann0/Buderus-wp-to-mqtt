@@ -26,6 +26,7 @@ type Sensor struct {
 	DeviceClass string
 	StateClass  string
 	Icon        string
+	Options     []string
 }
 
 // Message ist eine fertige MQTT-Nachricht.
@@ -47,6 +48,7 @@ type discoveryPayload struct {
 	DeviceClass       string          `json:"device_class,omitempty"`
 	StateClass        string          `json:"state_class,omitempty"`
 	Icon              string          `json:"icon,omitempty"`
+	Options           []string        `json:"options,omitempty"`
 	AvailabilityTopic string          `json:"availability_topic"`
 	Device            discoveryDevice `json:"device"`
 }
@@ -76,6 +78,7 @@ func BuildDiscoveryMessages(discoveryPrefix, availabilityTopic string, device De
 			DeviceClass:       s.DeviceClass,
 			StateClass:        s.StateClass,
 			Icon:              s.Icon,
+			Options:           s.Options,
 			AvailabilityTopic: availabilityTopic,
 			Device: discoveryDevice{
 				Identifiers:  []string{device.ID},

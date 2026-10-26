@@ -31,6 +31,14 @@ type ValueResponse struct {
 	State         []map[string]float64 `json:"state"`
 }
 
+// StringResponse ist die Antwort eines Endpunkts, der einen Textwert liefert.
+type StringResponse struct {
+	ID            string   `json:"id"`
+	Type          string   `json:"type"`
+	Value         string   `json:"value"`
+	AllowedValues []string `json:"allowedValues"`
+}
+
 // SensorFault meldet, ob der Wert einem vom Gateway als Fehlerwert markierten Zustand entspricht.
 func (r ValueResponse) SensorFault() bool {
 	return r.SensorFaultState() != ""

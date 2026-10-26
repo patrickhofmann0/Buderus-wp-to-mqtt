@@ -11,6 +11,8 @@ Aktuell werden abgefragt:
 | Verdichterleistung | `/heatSources/compressor/powerElecActual` | aktuelle elektrische Leistung des Verdichters (W) |
 | Modulation | `/heatSources/actualModulation` | aktuelle Modulation (%) |
 | Außentemperatur | `/system/sensors/temperatures/outdoor_t1` | Außentemperatur (°C) |
+| HK1 Sommer/Winter | `/heatingCircuits/hc1/currentSuWiMode` | Heizkreisstatus: Winter, Sommer oder Kühlen |
+| HK2 Sommer/Winter | `/heatingCircuits/hc2/currentSuWiMode` | Heizkreisstatus: Winter, Sommer oder Kühlen |
 
 Manche Gateways (z. B. MX400) liefern keinen Gesamt-Stromverbrauch (`electricity`), sondern nur `compressor` und `eheater`. In diesem Fall wird `electricity` als Summe der beiden berechnet.
 
@@ -80,6 +82,8 @@ Beispiel mit `MQTT_TOPIC_PREFIX=buderus/wp`:
 | `buderus/wp/dhw` | `{"electricity":1100.5,"compressor":1100.5,"eheater":0,"outputProduced":3382.54,"unit":"kWh"}` | ja |
 | `buderus/wp/power` | `{"compressorPower":460,"modulation":13}` | ja |
 | `buderus/wp/temperatures` | `{"outdoor":7.5}` | ja |
+| `buderus/wp/hc1` | `{"summerWinterMode":"Winter"}` | ja |
+| `buderus/wp/hc2` | `{"summerWinterMode":"Sommer"}` | ja |
 
 | Feld | Bedeutung |
 |---|---|
@@ -91,12 +95,13 @@ Beispiel mit `MQTT_TOPIC_PREFIX=buderus/wp`:
 | `compressorPower` | Aktuelle elektrische Leistung des Verdichters in W |
 | `modulation` | Aktuelle Modulation in % |
 | `outdoor` | Außentemperatur in °C |
+| `summerWinterMode` | Heizkreisbetrieb: `Winter`, `Sommer` oder `Kühlen` |
 
 Fehlt ein Wert in der Antwort des Gateways, wird das Feld weggelassen. Mit `LOG_LEVEL=debug` wird die Rohantwort des Gateways geloggt.
 
 ### Home Assistant
 
-Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw`) vier Energiesensoren sowie Sensoren für Verdichterleistung, Modulation und Außentemperatur angelegt, gruppiert unter einem Gerät:
+Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw`) vier Energiesensoren sowie Sensoren für Verdichterleistung, Modulation, Außentemperatur und die beiden Heizkreis-Modi angelegt, gruppiert unter einem Gerät:
 
 | Sensor-Key | Name |
 |---|---|
@@ -107,10 +112,12 @@ Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw
 | `compressor_power` | Leistung Verdichter (W) |
 | `modulation` | Modulation (%) |
 | `outdoor_temperature` | Außentemperatur (°C) |
+| `hc1_summer_winter_mode` | HK1 Sommer/Winter (Winter, Sommer, Kühlen) |
+| `hc2_summer_winter_mode` | HK2 Sommer/Winter (Winter, Sommer, Kühlen) |
 
 Discovery-Topic: `<MQTT_HA_DISCOVERY_PREFIX>/sensor/<DEVICE_ID>/<sensor-key>/config`
 
-Die Energiesensoren haben `device_class: energy` und `state_class: total_increasing` und können direkt im **Energie-Dashboard** verwendet werden. Leistung, Modulation und Temperatur verwenden `state_class: measurement`.
+Die Energiesensoren haben `device_class: energy` und `state_class: total_increasing` und können direkt im **Energie-Dashboard** verwendet werden. Leistung, Modulation und Temperatur verwenden `state_class: measurement`; die Modus-Sensoren sind Enums mit den Optionen „Winter“, „Sommer“ und „Kühlen“.
 
 Meldet der Außenfühler einen `open`- oder `short`-Fehlerwert, wird kein neuer Temperaturwert veröffentlicht; der letzte retained Wert bleibt bestehen.
 

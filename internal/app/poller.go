@@ -20,6 +20,7 @@ import (
 type Fetcher interface {
 	FetchEmon(ctx context.Context, path string) (buderus.EmonResponse, error)
 	FetchValue(ctx context.Context, path string) (buderus.ValueResponse, error)
+	FetchString(ctx context.Context, path string) (buderus.StringResponse, error)
 }
 
 // Publisher veröffentlicht MQTT-Nachrichten. *mqtt.Client erfüllt dieses Interface.
@@ -37,10 +38,28 @@ type Circuit struct {
 	Path string
 }
 
+// HeatingCircuit ist ein unterstützter Heizkreis für Statuswerte.
+type HeatingCircuit struct {
+	Key   string
+	Label string
+}
+
 // DefaultCircuits sind die aktuell unterstützten Energiezähler.
 var DefaultCircuits = []Circuit{
 	{Key: "heating", Label: "Heizung", Path: buderus.PathHeatingConsumption},
 	{Key: "dhw", Label: "Warmwasser", Path: buderus.PathDHWConsumption},
+}
+
+// DefaultHeatingCircuits sind die fest unterstützten Heizkreise.
+var DefaultHeatingCircuits = []HeatingCircuit{
+	{Key: "hc1", Label: "HK1"},
+	{Key: "hc2", Label: "HK2"},
+}
+
+var summerWinterModes = map[string]string{
+	"forced":  "Winter",
+	"off":     "Sommer",
+	"cooling": "Kühlen",
 }
 
 // StatePayload ist der JSON-Inhalt, der pro Circuit veröffentlicht wird.
@@ -132,6 +151,44 @@ func (p *Poller) PollOnce(ctx context.Context) {
 	if err := p.pollTemperatures(ctx); err != nil {
 		p.logger.Error("poll failed", "path", buderus.PathOutdoorTemperature, "error", err)
 	}
+	for _, circuit := range DefaultHeatingCircuits {
+		if err := p.pollHeatingCircuitMode(ctx, circuit); err != nil {
+			p.logger.Error("poll failed", "heatingCircuit", circuit.Key, "error", err)
+		}
+	}
+}
+
+func translateSummerWinterMode(mode string) (string, bool) {
+	translated, ok := summerWinterModes[mode]
+	return translated, ok
+}
+
+func (p *Poller) pollHeatingCircuitMode(ctx context.Context, circuit HeatingCircuit) error {
+	path := buderus.HeatingCircuitPath(circuit.Key, "currentSuWiMode")
+	resp, err := p.fetcher.FetchString(ctx, path)
+	if err != nil {
+		return err
+	}
+
+	mode, ok := translateSummerWinterMode(resp.Value)
+	if !ok {
+		p.logger.Warn("unknown heating circuit summer/winter mode", "heatingCircuit", circuit.Key, "value", resp.Value)
+		return nil
+	}
+
+	payload, err := json.Marshal(struct {
+		SummerWinterMode string `json:"summerWinterMode"`
+	}{SummerWinterMode: mode})
+	if err != nil {
+		return fmt.Errorf("marshal heating circuit mode: %w", err)
+	}
+
+	topic := StateTopic(p.topicPrefix, Circuit{Key: circuit.Key})
+	if err := p.publisher.Publish(ctx, topic, payload, true); err != nil {
+		return err
+	}
+	p.logger.Debug("published", "topic", topic, "payload", string(payload))
+	return nil
 }
 
 func (p *Poller) pollPower(ctx context.Context) error {
@@ -279,5 +336,16 @@ func Sensors(topicPrefix string, circuits []Circuit) []mqtt.Sensor {
 		StateClass:  "measurement",
 		Icon:        "mdi:thermometer",
 	})
+	for _, circuit := range DefaultHeatingCircuits {
+		sensors = append(sensors, mqtt.Sensor{
+			Key:         circuit.Key + "_summer_winter_mode",
+			Name:        circuit.Label + " Sommer/Winter",
+			StateTopic:  topicPrefix + "/" + circuit.Key,
+			JSONField:   "summerWinterMode",
+			DeviceClass: "enum",
+			Options:     []string{"Winter", "Sommer", "Kühlen"},
+			Icon:        "mdi:sun-snowflake-variant",
+		})
+	}
 	return sensors
 }
