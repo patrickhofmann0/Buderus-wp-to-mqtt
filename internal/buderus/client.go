@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,9 @@ import (
 	"strconv"
 	"time"
 )
+
+// ErrNotFound kennzeichnet einen API-Endpunkt, den das Gateway nicht bereitstellt.
+var ErrNotFound = errors.New("gateway resource not found")
 
 // Pfade der Energiezähler für Heizung (central heating) und Warmwasser (domestic hot water).
 const (
@@ -117,6 +121,9 @@ func (c *Client) getJSON(ctx context.Context, path string, target any) error {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("GET %s: %w", path, ErrNotFound)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET %s: unexpected status %s: %.512s", path, resp.Status, body)
 	}

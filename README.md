@@ -19,6 +19,7 @@ Aktuell werden abgefragt:
 | HK2 Sommer/Winter | `/heatingCircuits/hc2/currentSuWiMode` | Heizkreisstatus: Winter, Sommer oder Kühlen |
 | HK1 Raumsollwert | `/heatingCircuits/hc1/currentRoomSetpoint` | eingestellte Raumtemperatur (°C) |
 | HK2 Raumsollwert | `/heatingCircuits/hc2/currentRoomSetpoint` | eingestellte Raumtemperatur (°C) |
+| Mischerstellung | `/heatingCircuits/{hc}/mixerPosition` | Mischerposition in % (nur Heizkreise mit Mischer) |
 
 Manche Gateways (z. B. MX400) liefern keinen Gesamt-Stromverbrauch (`electricity`), sondern nur `compressor` und `eheater`. In diesem Fall wird `electricity` als Summe der beiden berechnet.
 
@@ -89,7 +90,7 @@ Beispiel mit `MQTT_TOPIC_PREFIX=buderus/wp`:
 | `buderus/wp/power` | `{"compressorPower":460,"modulation":13}` | ja |
 | `buderus/wp/temperatures` | `{"outdoor":7.5,"supply":30.6,"return":30,"dhwActual":43,"dhwSetpoint":48}` | ja |
 | `buderus/wp/hc1` | `{"summerWinterMode":"Winter","roomSetpoint":21}` | ja |
-| `buderus/wp/hc2` | `{"summerWinterMode":"Sommer"}` (Heizkreis aus) | ja |
+| `buderus/wp/hc2` | `{"summerWinterMode":"Sommer","mixerPosition":49}` (Heizkreis aus; Mischer vorhanden) | ja |
 
 | Feld | Bedeutung |
 |---|---|
@@ -107,6 +108,7 @@ Beispiel mit `MQTT_TOPIC_PREFIX=buderus/wp`:
 | `dhwSetpoint` | Eingestellte Warmwassertemperatur in °C |
 | `summerWinterMode` | Heizkreisbetrieb: `Winter`, `Sommer` oder `Kühlen` |
 | `roomSetpoint` | Eingestellte Raumtemperatur in °C; bei ausgeschaltetem Heizkreis (`off`) weggelassen |
+| `mixerPosition` | Stellung des Heizkreismischers in %; nur vorhanden, wenn der Heizkreis einen Mischer hat |
 
 Fehlt ein Wert in der Antwort des Gateways, wird das Feld weggelassen. Mit `LOG_LEVEL=debug` wird die Rohantwort des Gateways geloggt.
 
@@ -131,12 +133,15 @@ Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw
 | `hc2_summer_winter_mode` | HK2 Sommer/Winter (Winter, Sommer, Kühlen) |
 | `hc1_room_setpoint` | HK1 Raumsollwert (°C) |
 | `hc2_room_setpoint` | HK2 Raumsollwert (°C) |
+| `<hc>_mixer_position` | Mischerstellung (%) – wird nur für erkannte Heizkreise mit Mischer angelegt |
 
 Discovery-Topic: `<MQTT_HA_DISCOVERY_PREFIX>/sensor/<DEVICE_ID>/<sensor-key>/config`
 
 Die Energiesensoren haben `device_class: energy` und `state_class: total_increasing` und können direkt im **Energie-Dashboard** verwendet werden. Leistung, Modulation, Temperatur und Raumsollwerte verwenden `state_class: measurement`; die Modus-Sensoren sind Enums mit den Optionen „Winter“, „Sommer“ und „Kühlen“.
 
 Temperaturfelder mit einem `open`-/`short`-Fehlerwert oder außerhalb von −50 bis 150 °C werden einzeln weggelassen; gültige Temperaturwerte werden weiterhin veröffentlicht. Bei einem fehlenden Feld zeigt Home Assistant den jeweiligen Sensor als „unbekannt“ an.
+
+Beim Start prüft der Dienst für `hc1` und `hc2`, ob der Mischer-Endpunkt verfügbar ist. Bei HTTP 404 werden Mischerabfrage und Sensor für diesen Heizkreis ausgelassen. Bei anderen Fehlern wird der Mischer vorsichtshalber als vorhanden angenommen und weiter abgefragt; ein vorübergehender Gateway-Ausfall verhindert so nicht die Sensorerkennung.
 
 ## Lokale Entwicklung
 

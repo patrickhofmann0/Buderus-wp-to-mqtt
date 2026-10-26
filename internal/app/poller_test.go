@@ -12,10 +12,11 @@ import (
 
 // fakeFetcher liefert vordefinierte Antworten pro Pfad (≈ Mockito-Mock, nur handgeschrieben).
 type fakeFetcher struct {
-	responses map[string]buderus.EmonResponse
-	values    map[string]buderus.ValueResponse
-	strings   map[string]buderus.StringResponse
-	errs      map[string]error
+	responses  map[string]buderus.EmonResponse
+	values     map[string]buderus.ValueResponse
+	strings    map[string]buderus.StringResponse
+	errs       map[string]error
+	valueCalls []string
 }
 
 func (f *fakeFetcher) FetchEmon(_ context.Context, path string) (buderus.EmonResponse, error) {
@@ -26,6 +27,7 @@ func (f *fakeFetcher) FetchEmon(_ context.Context, path string) (buderus.EmonRes
 }
 
 func (f *fakeFetcher) FetchValue(_ context.Context, path string) (buderus.ValueResponse, error) {
+	f.valueCalls = append(f.valueCalls, path)
 	if err := f.errs[path]; err != nil {
 		return buderus.ValueResponse{}, err
 	}
@@ -73,6 +75,7 @@ func TestPollOnce(t *testing.T) {
 			buderus.PathReturnTemperature:                            {Value: ptr(30), UnitOfMeasure: "C", State: []map[string]float64{{"open": -32768}, {"short": 32767}}},
 			buderus.DHWCircuitPath("dhw1", "actualTemp"):             {Value: ptr(43), UnitOfMeasure: "C", State: []map[string]float64{{"open": -32768}, {"short": 32767}}},
 			buderus.DHWCircuitPath("dhw1", "currentSetpoint"):        {Value: ptr(48), UnitOfMeasure: "C"},
+			buderus.HeatingCircuitPath("hc2", "mixerPosition"):       {Value: ptr(49), UnitOfMeasure: "%"},
 			buderus.HeatingCircuitPath("hc1", "currentRoomSetpoint"): {Value: ptr(21), UnitOfMeasure: "C", State: []map[string]float64{{"off": 0}}},
 			buderus.HeatingCircuitPath("hc2", "currentRoomSetpoint"): {Value: ptr(0), UnitOfMeasure: "C", State: []map[string]float64{{"off": 0}}},
 		},
@@ -86,7 +89,8 @@ func TestPollOnce(t *testing.T) {
 	}
 	publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
 
-	poller := NewPoller(fetcher, publisher, "buderus/wp", DefaultCircuits, discardLogger())
+	heatingCircuits := []HeatingCircuit{{Key: "hc1", Label: "HK1"}, {Key: "hc2", Label: "HK2", HasMixer: true}}
+	poller := NewPoller(fetcher, publisher, "buderus/wp", DefaultCircuits, heatingCircuits, discardLogger())
 	poller.PollOnce(context.Background())
 
 	// electricity wird aus compressor + eheater berechnet.
@@ -113,11 +117,52 @@ func TestPollOnce(t *testing.T) {
 	if got := publisher.published["buderus/wp/hc1"]; got != `{"summerWinterMode":"Winter","roomSetpoint":21}` {
 		t.Errorf("hc1 payload = %s, want Winter mode and 21 °C setpoint", got)
 	}
-	if got := publisher.published["buderus/wp/hc2"]; got != `{"summerWinterMode":"Sommer"}` {
-		t.Errorf("hc2 payload = %s, want Sommer mode without an off setpoint", got)
+	if got := publisher.published["buderus/wp/hc2"]; got != `{"summerWinterMode":"Sommer","mixerPosition":49}` {
+		t.Errorf("hc2 payload = %s, want Sommer mode and mixer position", got)
 	}
 	if !publisher.retained["buderus/wp/hc1"] || !publisher.retained["buderus/wp/hc2"] {
 		t.Error("heating circuit mode states should be retained")
+	}
+	for _, path := range fetcher.valueCalls {
+		if path == buderus.HeatingCircuitPath("hc1", "mixerPosition") {
+			t.Error("mixer position should not be queried for hc1 without a mixer")
+		}
+	}
+}
+
+func TestDetectHeatingCircuits(t *testing.T) {
+	hc1MixerPath := buderus.HeatingCircuitPath("hc1", "mixerPosition")
+	hc2MixerPath := buderus.HeatingCircuitPath("hc2", "mixerPosition")
+	fetcher := &fakeFetcher{
+		values: map[string]buderus.ValueResponse{hc2MixerPath: {Value: ptr(49)}},
+		errs:   map[string]error{hc1MixerPath: buderus.ErrNotFound},
+	}
+
+	circuits := DetectHeatingCircuits(context.Background(), fetcher, discardLogger())
+	if len(circuits) != 2 {
+		t.Fatalf("got %d heating circuits, want 2", len(circuits))
+	}
+	if circuits[0].Key != "hc1" || circuits[0].HasMixer {
+		t.Errorf("hc1 detection = %+v, want no mixer", circuits[0])
+	}
+	if circuits[1].Key != "hc2" || !circuits[1].HasMixer {
+		t.Errorf("hc2 detection = %+v, want mixer present", circuits[1])
+	}
+}
+
+func TestDetectHeatingCircuitsAssumesMixerOnOtherErrors(t *testing.T) {
+	hc1MixerPath := buderus.HeatingCircuitPath("hc1", "mixerPosition")
+	hc2MixerPath := buderus.HeatingCircuitPath("hc2", "mixerPosition")
+	fetcher := &fakeFetcher{
+		errs: map[string]error{
+			hc1MixerPath: errors.New("gateway unavailable"),
+			hc2MixerPath: buderus.ErrNotFound,
+		},
+	}
+
+	circuits := DetectHeatingCircuits(context.Background(), fetcher, discardLogger())
+	if !circuits[0].HasMixer || circuits[1].HasMixer {
+		t.Errorf("detected circuits = %+v, want hc1 assumed and hc2 absent", circuits)
 	}
 }
 
@@ -132,7 +177,7 @@ func TestPowerFetchErrorDoesNotStopEnergyPublishing(t *testing.T) {
 	}
 	publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
 
-	poller := NewPoller(fetcher, publisher, "buderus/wp", []Circuit{DefaultCircuits[0]}, discardLogger())
+	poller := NewPoller(fetcher, publisher, "buderus/wp", []Circuit{DefaultCircuits[0]}, nil, discardLogger())
 	poller.PollOnce(context.Background())
 
 	if _, ok := publisher.published["buderus/wp/heating"]; !ok {
@@ -154,7 +199,7 @@ func TestModulationFetchErrorStillPublishesCompressorPower(t *testing.T) {
 	}
 	publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
 
-	poller := NewPoller(fetcher, publisher, "buderus/wp", nil, discardLogger())
+	poller := NewPoller(fetcher, publisher, "buderus/wp", nil, nil, discardLogger())
 	poller.PollOnce(context.Background())
 
 	if got := publisher.published["buderus/wp/power"]; got != `{"compressorPower":460}` {
@@ -173,7 +218,7 @@ func TestOutdoorSensorFaultIsNotPublished(t *testing.T) {
 	}
 	publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
 
-	poller := NewPoller(fetcher, publisher, "buderus/wp", nil, discardLogger())
+	poller := NewPoller(fetcher, publisher, "buderus/wp", nil, nil, discardLogger())
 	poller.PollOnce(context.Background())
 
 	if _, ok := publisher.published["buderus/wp/temperatures"]; ok {
@@ -199,7 +244,7 @@ func TestTemperatureFaultAndOutlierOmitOnlyInvalidFields(t *testing.T) {
 	}
 	publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
 
-	poller := NewPoller(fetcher, publisher, "buderus/wp", nil, discardLogger())
+	poller := NewPoller(fetcher, publisher, "buderus/wp", nil, nil, discardLogger())
 	poller.PollOnce(context.Background())
 
 	want := `{"supply":31,"dhwActual":44,"dhwSetpoint":50}`
@@ -221,7 +266,7 @@ func TestHeatingCircuitModeErrorsAreIndependent(t *testing.T) {
 	}
 	publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
 
-	NewPoller(fetcher, publisher, "buderus/wp", nil, discardLogger()).PollOnce(context.Background())
+	NewPoller(fetcher, publisher, "buderus/wp", nil, DefaultHeatingCircuits, discardLogger()).PollOnce(context.Background())
 
 	if _, ok := publisher.published["buderus/wp/hc1"]; ok {
 		t.Error("hc1 should not be published after fetch error")
@@ -259,7 +304,7 @@ func TestHeatingCircuitPublishesAvailableFieldWhenOtherFetchFails(t *testing.T) 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
-			poller := NewPoller(tt.fetcher, publisher, "buderus/wp", nil, discardLogger())
+			poller := NewPoller(tt.fetcher, publisher, "buderus/wp", nil, nil, discardLogger())
 			if err := poller.pollHeatingCircuit(context.Background(), DefaultHeatingCircuits[0]); err != nil {
 				t.Fatalf("pollHeatingCircuit() error = %v", err)
 			}
@@ -278,7 +323,7 @@ func TestUnknownHeatingCircuitModeIsNotPublished(t *testing.T) {
 	}
 	publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
 
-	NewPoller(fetcher, publisher, "buderus/wp", nil, discardLogger()).PollOnce(context.Background())
+	NewPoller(fetcher, publisher, "buderus/wp", nil, nil, discardLogger()).PollOnce(context.Background())
 
 	if _, ok := publisher.published["buderus/wp/hc1"]; ok {
 		t.Error("unknown mode should not be published")
@@ -303,9 +348,10 @@ func TestTranslateSummerWinterMode(t *testing.T) {
 }
 
 func TestSensors(t *testing.T) {
-	sensors := Sensors("buderus/wp", DefaultCircuits)
-	if len(sensors) != 19 {
-		t.Fatalf("got %d sensors, want 19", len(sensors))
+	heatingCircuits := []HeatingCircuit{{Key: "hc1", Label: "HK1"}, {Key: "hc2", Label: "HK2", HasMixer: true}}
+	sensors := Sensors("buderus/wp", DefaultCircuits, heatingCircuits)
+	if len(sensors) != 20 {
+		t.Fatalf("got %d sensors, want 20", len(sensors))
 	}
 
 	keys := map[string]bool{}
@@ -326,6 +372,7 @@ func TestSensors(t *testing.T) {
 		"hc2_summer_winter_mode",
 		"hc1_room_setpoint",
 		"hc2_room_setpoint",
+		"hc2_mixer_position",
 	} {
 		if !keys[key] {
 			t.Errorf("missing sensor %q", key)
@@ -335,6 +382,7 @@ func TestSensors(t *testing.T) {
 	foundTemperatures := map[string]bool{}
 	foundHeatingModes := map[string]bool{}
 	foundRoomSetpoints := map[string]bool{}
+	foundMixer := false
 	roomSetpointTopics := map[string]string{
 		"hc1_room_setpoint": "buderus/wp/hc1",
 		"hc2_room_setpoint": "buderus/wp/hc2",
@@ -376,6 +424,15 @@ func TestSensors(t *testing.T) {
 				t.Errorf("unexpected room setpoint sensor: %+v", s)
 			}
 		}
+		if s.Key == "hc2_mixer_position" {
+			foundMixer = true
+			if s.StateTopic != "buderus/wp/hc2" || s.JSONField != "mixerPosition" || s.Unit != "%" || s.StateClass != "measurement" {
+				t.Errorf("unexpected mixer position sensor: %+v", s)
+			}
+		}
+		if s.Key == "hc1_mixer_position" {
+			t.Error("mixer sensor should not be created for hc1")
+		}
 	}
 	if !foundCompressorPower {
 		t.Error("compressor_power sensor not found")
@@ -400,5 +457,8 @@ func TestSensors(t *testing.T) {
 		if !foundRoomSetpoints[key] {
 			t.Errorf("%s sensor not found", key)
 		}
+	}
+	if !foundMixer {
+		t.Error("hc2_mixer_position sensor not found")
 	}
 }

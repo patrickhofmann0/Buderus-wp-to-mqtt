@@ -4,6 +4,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -40,8 +41,9 @@ type Circuit struct {
 
 // HeatingCircuit ist ein unterstützter Heizkreis für Statuswerte.
 type HeatingCircuit struct {
-	Key   string
-	Label string
+	Key      string
+	Label    string
+	HasMixer bool
 }
 
 // DefaultCircuits sind die aktuell unterstützten Energiezähler.
@@ -54,6 +56,27 @@ var DefaultCircuits = []Circuit{
 var DefaultHeatingCircuits = []HeatingCircuit{
 	{Key: "hc1", Label: "HK1"},
 	{Key: "hc2", Label: "HK2"},
+}
+
+// DetectHeatingCircuits erkennt beim Start, welche Heizkreise einen Mischer haben.
+// Bei 404 wird der Mischer ausgelassen; bei anderen Fehlern wird vorsichtshalber weiter abgefragt.
+func DetectHeatingCircuits(ctx context.Context, fetcher Fetcher, logger *slog.Logger) []HeatingCircuit {
+	circuits := append([]HeatingCircuit(nil), DefaultHeatingCircuits...)
+	for i := range circuits {
+		path := buderus.HeatingCircuitPath(circuits[i].Key, "mixerPosition")
+		_, err := fetcher.FetchValue(ctx, path)
+		switch {
+		case err == nil:
+			circuits[i].HasMixer = true
+			logger.Info("heating circuit mixer detected", "heatingCircuit", circuits[i].Key)
+		case errors.Is(err, buderus.ErrNotFound):
+			logger.Info("heating circuit has no mixer", "heatingCircuit", circuits[i].Key)
+		default:
+			circuits[i].HasMixer = true
+			logger.Warn("mixer detection failed; assuming mixer is present", "heatingCircuit", circuits[i].Key, "error", err)
+		}
+	}
+	return circuits
 }
 
 var summerWinterModes = map[string]string{
@@ -91,21 +114,23 @@ type TemperaturesPayload struct {
 
 // Poller fragt die Werte regelmäßig ab und veröffentlicht sie.
 type Poller struct {
-	fetcher     Fetcher
-	publisher   Publisher
-	topicPrefix string
-	circuits    []Circuit
-	logger      *slog.Logger
+	fetcher         Fetcher
+	publisher       Publisher
+	topicPrefix     string
+	circuits        []Circuit
+	heatingCircuits []HeatingCircuit
+	logger          *slog.Logger
 }
 
 // NewPoller erzeugt einen Poller. Abhängigkeiten werden übergeben (≈ Constructor Injection).
-func NewPoller(fetcher Fetcher, publisher Publisher, topicPrefix string, circuits []Circuit, logger *slog.Logger) *Poller {
+func NewPoller(fetcher Fetcher, publisher Publisher, topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCircuit, logger *slog.Logger) *Poller {
 	return &Poller{
-		fetcher:     fetcher,
-		publisher:   publisher,
-		topicPrefix: topicPrefix,
-		circuits:    circuits,
-		logger:      logger,
+		fetcher:         fetcher,
+		publisher:       publisher,
+		topicPrefix:     topicPrefix,
+		circuits:        circuits,
+		heatingCircuits: heatingCircuits,
+		logger:          logger,
 	}
 }
 
@@ -155,7 +180,7 @@ func (p *Poller) PollOnce(ctx context.Context) {
 	if err := p.pollTemperatures(ctx); err != nil {
 		p.logger.Error("poll failed", "group", "temperatures", "error", err)
 	}
-	for _, circuit := range DefaultHeatingCircuits {
+	for _, circuit := range p.heatingCircuits {
 		if err := p.pollHeatingCircuit(ctx, circuit); err != nil {
 			p.logger.Error("poll failed", "heatingCircuit", circuit.Key, "error", err)
 		}
@@ -171,6 +196,7 @@ func translateSummerWinterMode(mode string) (string, bool) {
 type HeatingCircuitPayload struct {
 	SummerWinterMode string   `json:"summerWinterMode,omitempty"`
 	RoomSetpoint     *float64 `json:"roomSetpoint,omitempty"`
+	MixerPosition    *float64 `json:"mixerPosition,omitempty"`
 }
 
 func (p *Poller) pollHeatingCircuit(ctx context.Context, circuit HeatingCircuit) error {
@@ -196,7 +222,21 @@ func (p *Poller) pollHeatingCircuit(ctx context.Context, circuit HeatingCircuit)
 		state.RoomSetpoint = setpointResponse.Value
 	}
 
-	if state.SummerWinterMode == "" && state.RoomSetpoint == nil {
+	if circuit.HasMixer {
+		mixerPath := buderus.HeatingCircuitPath(circuit.Key, "mixerPosition")
+		mixerResponse, err := p.fetcher.FetchValue(ctx, mixerPath)
+		if err != nil {
+			if errors.Is(err, buderus.ErrNotFound) {
+				p.logger.Warn("heating circuit mixer no longer available", "heatingCircuit", circuit.Key)
+			} else {
+				p.logger.Error("mixer position fetch failed", "path", mixerPath, "error", err)
+			}
+		} else {
+			state.MixerPosition = mixerResponse.Value
+		}
+	}
+
+	if state.SummerWinterMode == "" && state.RoomSetpoint == nil && state.MixerPosition == nil {
 		return nil
 	}
 
@@ -324,7 +364,7 @@ func (p *Poller) pollCircuit(ctx context.Context, c Circuit) error {
 }
 
 // Sensors liefert die Sensor-Definitionen für die Home-Assistant-Discovery.
-func Sensors(topicPrefix string, circuits []Circuit) []mqtt.Sensor {
+func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCircuit) []mqtt.Sensor {
 	// Felder, für die pro Circuit ein Sensor angelegt wird.
 	fields := []struct {
 		keySuffix string
@@ -404,7 +444,7 @@ func Sensors(topicPrefix string, circuits []Circuit) []mqtt.Sensor {
 			Icon:        temperature.icon,
 		})
 	}
-	for _, circuit := range DefaultHeatingCircuits {
+	for _, circuit := range heatingCircuits {
 		sensors = append(sensors, mqtt.Sensor{
 			Key:         circuit.Key + "_summer_winter_mode",
 			Name:        circuit.Label + " Sommer/Winter",
@@ -424,6 +464,17 @@ func Sensors(topicPrefix string, circuits []Circuit) []mqtt.Sensor {
 			StateClass:  "measurement",
 			Icon:        "mdi:home-thermometer",
 		})
+		if circuit.HasMixer {
+			sensors = append(sensors, mqtt.Sensor{
+				Key:        circuit.Key + "_mixer_position",
+				Name:       circuit.Label + " Mischerstellung",
+				StateTopic: topicPrefix + "/" + circuit.Key,
+				JSONField:  "mixerPosition",
+				Unit:       "%",
+				StateClass: "measurement",
+				Icon:       "mdi:valve",
+			})
+		}
 	}
 	return sensors
 }

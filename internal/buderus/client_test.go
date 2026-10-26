@@ -3,6 +3,7 @@ package buderus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -245,6 +246,24 @@ func TestFetchEmonErrorStatus(t *testing.T) {
 
 	if _, err := client.FetchEmon(context.Background(), PathDHWConsumption); err == nil {
 		t.Fatal("expected error for status 401")
+	}
+}
+
+func TestFetchValueNotFoundSentinel(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	if _, err := client.FetchValue(context.Background(), HeatingCircuitPath("hc1", "mixerPosition")); !errors.Is(err, ErrNotFound) {
+		t.Errorf("FetchValue() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestFetchValueOtherStatusIsNotNotFound(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	if _, err := client.FetchValue(context.Background(), HeatingCircuitPath("hc1", "mixerPosition")); err == nil || errors.Is(err, ErrNotFound) {
+		t.Errorf("FetchValue() error = %v, want non-404 error", err)
 	}
 }
 

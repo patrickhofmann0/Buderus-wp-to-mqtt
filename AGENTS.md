@@ -15,6 +15,7 @@ Go service (`cmd/buderus2mqtt`) that polls a Buderus heat pump gateway's local R
 - `app.Fetcher`/`app.Publisher` are interfaces defined by the consumer; tests use handwritten fakes and `httptest.NewTLSServer`, no mocking libs.
 - Adding a new measured value usually touches all of: `buderus/model.go` + `client.go` (path/fetch), `app/poller.go` (payload + discovery `Sensor`), `mqtt/discovery.go` if new HA fields are needed, matching `_test.go` files, and the README tables (topics, fields, HA sensors).
 - Payload fields are pointers with `omitempty`: values the gateway doesn't return are omitted, not zeroed. Temperature sensor fault values (`open`/`short`) and implausible readings outside −50..150 °C omit only that field; the other temperature fields are still published. A room setpoint marked `off` is omitted.
+- Mixer endpoints are detected at startup: HTTP 404 skips polling and Home Assistant discovery for that circuit; other errors assume a mixer is present and allow later polling to recover.
 - `buderus.yml` is the vendor OpenAPI spec (Apache-2.0, see `NOTICE`); use it as API reference, don't edit it. `scripts/probe-*.sh` query a real gateway using `.env` to check what a device supports.
 - `docs/plan-erweiterung.md` is a future plan (e.g. `app/definitions.go`, group pollers) — not the current state.
 

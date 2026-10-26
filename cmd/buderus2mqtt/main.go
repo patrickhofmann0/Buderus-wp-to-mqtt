@@ -57,15 +57,16 @@ func run() error {
 		defer cancel()
 		mqttClient.Close(closeCtx)
 	}()
+	buderusClient := buderus.NewClient(cfg.BuderusHost, cfg.BuderusPort, cfg.BuderusToken, logger)
+	heatingCircuits := app.DetectHeatingCircuits(ctx, buderusClient, logger)
 
 	if cfg.DiscoveryEnabled {
-		if err := publishDiscovery(ctx, cfg, availabilityTopic, mqttClient); err != nil {
+		if err := publishDiscovery(ctx, cfg, availabilityTopic, mqttClient, heatingCircuits); err != nil {
 			return err
 		}
 	}
 
-	buderusClient := buderus.NewClient(cfg.BuderusHost, cfg.BuderusPort, cfg.BuderusToken, logger)
-	poller := app.NewPoller(buderusClient, mqttClient, cfg.TopicPrefix, app.DefaultCircuits, logger)
+	poller := app.NewPoller(buderusClient, mqttClient, cfg.TopicPrefix, app.DefaultCircuits, heatingCircuits, logger)
 
 	logger.Info("started", "version", version, "gateway", cfg.BuderusHost, "interval", cfg.PollInterval, "topicPrefix", cfg.TopicPrefix)
 	poller.Run(ctx, cfg.PollInterval)
@@ -73,14 +74,14 @@ func run() error {
 	return nil
 }
 
-func publishDiscovery(ctx context.Context, cfg config.Config, availabilityTopic string, client *mqtt.Client) error {
+func publishDiscovery(ctx context.Context, cfg config.Config, availabilityTopic string, client *mqtt.Client, heatingCircuits []app.HeatingCircuit) error {
 	device := mqtt.Device{
 		ID:           cfg.DeviceID,
 		Name:         cfg.DeviceName,
 		Manufacturer: "Buderus",
 		Model:        "Wärmepumpe",
 	}
-	messages, err := mqtt.BuildDiscoveryMessages(cfg.HADiscoveryPrefix, availabilityTopic, device, app.Sensors(cfg.TopicPrefix, app.DefaultCircuits))
+	messages, err := mqtt.BuildDiscoveryMessages(cfg.HADiscoveryPrefix, availabilityTopic, device, app.Sensors(cfg.TopicPrefix, app.DefaultCircuits, heatingCircuits))
 	if err != nil {
 		return err
 	}
