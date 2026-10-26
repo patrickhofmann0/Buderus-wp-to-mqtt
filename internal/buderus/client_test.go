@@ -84,6 +84,27 @@ func TestFetchValue(t *testing.T) {
 	}
 }
 
+func TestFetchModulationValue(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != PathModulation {
+			t.Errorf("path = %q, want %q", r.URL.Path, PathModulation)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"/heatSources/actualModulation","type":"floatValue","value":13.0,"unit":"%"}`))
+	})
+
+	got, err := client.FetchValue(context.Background(), PathModulation)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Value == nil || *got.Value != 13 {
+		t.Errorf("Value = %v, want 13", got.Value)
+	}
+	if got.Unit != "%" {
+		t.Errorf("Unit = %q, want %%", got.Unit)
+	}
+}
+
 func TestFetchEmonErrorStatus(t *testing.T) {
 	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

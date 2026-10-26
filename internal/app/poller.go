@@ -58,6 +58,7 @@ type StatePayload struct {
 // PowerPayload ist der JSON-Inhalt des Leistungstopics.
 type PowerPayload struct {
 	CompressorPower *float64 `json:"compressorPower,omitempty"`
+	Modulation      *float64 `json:"modulation,omitempty"`
 }
 
 // Poller fragt die Werte regelmäßig ab und veröffentlicht sie.
@@ -116,17 +117,32 @@ func (p *Poller) PollOnce(ctx context.Context) {
 		}
 	}
 	if err := p.pollPower(ctx); err != nil {
-		p.logger.Error("poll failed", "path", buderus.PathCompressorPower, "error", err)
+		p.logger.Error("poll failed", "group", "power", "error", err)
 	}
 }
 
 func (p *Poller) pollPower(ctx context.Context) error {
-	resp, err := p.fetcher.FetchValue(ctx, buderus.PathCompressorPower)
+	var payloadState PowerPayload
+
+	compressorPower, err := p.fetcher.FetchValue(ctx, buderus.PathCompressorPower)
 	if err != nil {
-		return err
+		p.logger.Error("poll failed", "path", buderus.PathCompressorPower, "error", err)
+	} else {
+		payloadState.CompressorPower = compressorPower.Value
 	}
 
-	payload, err := json.Marshal(PowerPayload{CompressorPower: resp.Value})
+	modulation, err := p.fetcher.FetchValue(ctx, buderus.PathModulation)
+	if err != nil {
+		p.logger.Error("poll failed", "path", buderus.PathModulation, "error", err)
+	} else {
+		payloadState.Modulation = modulation.Value
+	}
+
+	if payloadState.CompressorPower == nil && payloadState.Modulation == nil {
+		return nil
+	}
+
+	payload, err := json.Marshal(payloadState)
 	if err != nil {
 		return fmt.Errorf("marshal power state: %w", err)
 	}
@@ -204,6 +220,15 @@ func Sensors(topicPrefix string, circuits []Circuit) []mqtt.Sensor {
 		DeviceClass: "power",
 		StateClass:  "measurement",
 		Icon:        "mdi:heat-pump",
+	})
+	sensors = append(sensors, mqtt.Sensor{
+		Key:        "modulation",
+		Name:       "Modulation",
+		StateTopic: PowerTopic(topicPrefix),
+		JSONField:  "modulation",
+		Unit:       "%",
+		StateClass: "measurement",
+		Icon:       "mdi:sine-wave",
 	})
 	return sensors
 }

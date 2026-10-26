@@ -59,6 +59,7 @@ func TestPollOnce(t *testing.T) {
 		},
 		values: map[string]buderus.ValueResponse{
 			buderus.PathCompressorPower: {Value: ptr(460), Unit: "W"},
+			buderus.PathModulation:      {Value: ptr(13), Unit: "%"},
 		},
 		errs: map[string]error{
 			buderus.PathDHWConsumption: errors.New("gateway unreachable"),
@@ -78,8 +79,8 @@ func TestPollOnce(t *testing.T) {
 	if _, ok := publisher.published["buderus/wp/dhw"]; ok {
 		t.Error("dhw should not be published on fetch error")
 	}
-	if got := publisher.published["buderus/wp/power"]; got != `{"compressorPower":460}` {
-		t.Errorf("power payload = %s, want %s", got, `{"compressorPower":460}`)
+	if got := publisher.published["buderus/wp/power"]; got != `{"compressorPower":460,"modulation":13}` {
+		t.Errorf("power payload = %s, want %s", got, `{"compressorPower":460,"modulation":13}`)
 	}
 	if !publisher.retained["buderus/wp/power"] {
 		t.Error("power state should be retained")
@@ -108,10 +109,29 @@ func TestPowerFetchErrorDoesNotStopEnergyPublishing(t *testing.T) {
 	}
 }
 
+func TestModulationFetchErrorStillPublishesCompressorPower(t *testing.T) {
+	fetcher := &fakeFetcher{
+		values: map[string]buderus.ValueResponse{
+			buderus.PathCompressorPower: {Value: ptr(460), Unit: "W"},
+		},
+		errs: map[string]error{
+			buderus.PathModulation: errors.New("modulation endpoint unavailable"),
+		},
+	}
+	publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
+
+	poller := NewPoller(fetcher, publisher, "buderus/wp", nil, discardLogger())
+	poller.PollOnce(context.Background())
+
+	if got := publisher.published["buderus/wp/power"]; got != `{"compressorPower":460}` {
+		t.Errorf("power payload = %s, want compressor power only", got)
+	}
+}
+
 func TestSensors(t *testing.T) {
 	sensors := Sensors("buderus/wp", DefaultCircuits)
-	if len(sensors) != 9 {
-		t.Fatalf("got %d sensors, want 9", len(sensors))
+	if len(sensors) != 10 {
+		t.Fatalf("got %d sensors, want 10", len(sensors))
 	}
 
 	keys := map[string]bool{}
@@ -122,18 +142,31 @@ func TestSensors(t *testing.T) {
 		"heating_electricity", "heating_compressor", "heating_eheater", "heating_output_produced",
 		"dhw_electricity", "dhw_compressor", "dhw_eheater", "dhw_output_produced",
 		"compressor_power",
+		"modulation",
 	} {
 		if !keys[key] {
 			t.Errorf("missing sensor %q", key)
 		}
 	}
+	foundCompressorPower, foundModulation := false, false
 	for _, s := range sensors {
 		if s.Key == "compressor_power" {
+			foundCompressorPower = true
 			if s.StateTopic != "buderus/wp/power" || s.JSONField != "compressorPower" || s.Unit != "W" || s.DeviceClass != "power" || s.StateClass != "measurement" {
 				t.Errorf("unexpected compressor power sensor: %+v", s)
 			}
-			return
+		}
+		if s.Key == "modulation" {
+			foundModulation = true
+			if s.StateTopic != "buderus/wp/power" || s.JSONField != "modulation" || s.Unit != "%" || s.DeviceClass != "" || s.StateClass != "measurement" {
+				t.Errorf("unexpected modulation sensor: %+v", s)
+			}
 		}
 	}
-	t.Error("compressor_power sensor not found")
+	if !foundCompressorPower {
+		t.Error("compressor_power sensor not found")
+	}
+	if !foundModulation {
+		t.Error("modulation sensor not found")
+	}
 }
