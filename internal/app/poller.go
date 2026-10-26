@@ -82,7 +82,11 @@ type PowerPayload struct {
 
 // TemperaturesPayload ist der JSON-Inhalt des Temperaturtopics.
 type TemperaturesPayload struct {
-	Outdoor *float64 `json:"outdoor,omitempty"`
+	Outdoor     *float64 `json:"outdoor,omitempty"`
+	Supply      *float64 `json:"supply,omitempty"`
+	Return      *float64 `json:"return,omitempty"`
+	DHWActual   *float64 `json:"dhwActual,omitempty"`
+	DHWSetpoint *float64 `json:"dhwSetpoint,omitempty"`
 }
 
 // Poller fragt die Werte regelmäßig ab und veröffentlicht sie.
@@ -149,7 +153,7 @@ func (p *Poller) PollOnce(ctx context.Context) {
 		p.logger.Error("poll failed", "group", "power", "error", err)
 	}
 	if err := p.pollTemperatures(ctx); err != nil {
-		p.logger.Error("poll failed", "path", buderus.PathOutdoorTemperature, "error", err)
+		p.logger.Error("poll failed", "group", "temperatures", "error", err)
 	}
 	for _, circuit := range DefaultHeatingCircuits {
 		if err := p.pollHeatingCircuit(ctx, circuit); err != nil {
@@ -243,20 +247,44 @@ func (p *Poller) pollPower(ctx context.Context) error {
 	return nil
 }
 
-func (p *Poller) pollTemperatures(ctx context.Context) error {
-	resp, err := p.fetcher.FetchValue(ctx, buderus.PathOutdoorTemperature)
+const (
+	minPlausibleTemperature = -50
+	maxPlausibleTemperature = 150
+)
+
+func (p *Poller) fetchTemperature(ctx context.Context, path string) *float64 {
+	resp, err := p.fetcher.FetchValue(ctx, path)
 	if err != nil {
-		return err
+		p.logger.Error("temperature fetch failed", "path", path, "error", err)
+		return nil
 	}
 	if resp.SensorFault() {
-		p.logger.Warn("outdoor temperature sensor fault", "state", resp.SensorFaultState(), "value", *resp.Value)
+		p.logger.Warn("temperature sensor fault", "path", path, "state", resp.SensorFaultState(), "value", *resp.Value)
 		return nil
 	}
 	if resp.Value == nil {
 		return nil
 	}
+	if *resp.Value < minPlausibleTemperature || *resp.Value > maxPlausibleTemperature {
+		p.logger.Warn("temperature outside plausible range", "path", path, "value", *resp.Value, "minimum", minPlausibleTemperature, "maximum", maxPlausibleTemperature)
+		return nil
+	}
+	return resp.Value
+}
 
-	payload, err := json.Marshal(TemperaturesPayload{Outdoor: resp.Value})
+func (p *Poller) pollTemperatures(ctx context.Context) error {
+	state := TemperaturesPayload{
+		Outdoor:     p.fetchTemperature(ctx, buderus.PathOutdoorTemperature),
+		Supply:      p.fetchTemperature(ctx, buderus.PathSupplyTemperature),
+		Return:      p.fetchTemperature(ctx, buderus.PathReturnTemperature),
+		DHWActual:   p.fetchTemperature(ctx, buderus.DHWCircuitPath("dhw1", "actualTemp")),
+		DHWSetpoint: p.fetchTemperature(ctx, buderus.DHWCircuitPath("dhw1", "currentSetpoint")),
+	}
+	if state.Outdoor == nil && state.Supply == nil && state.Return == nil && state.DHWActual == nil && state.DHWSetpoint == nil {
+		return nil
+	}
+
+	payload, err := json.Marshal(state)
 	if err != nil {
 		return fmt.Errorf("marshal temperature state: %w", err)
 	}
@@ -354,6 +382,28 @@ func Sensors(topicPrefix string, circuits []Circuit) []mqtt.Sensor {
 		StateClass:  "measurement",
 		Icon:        "mdi:thermometer",
 	})
+	for _, temperature := range []struct {
+		key   string
+		name  string
+		field string
+		icon  string
+	}{
+		{key: "supply_temperature", name: "Vorlauftemperatur", field: "supply", icon: "mdi:thermometer-water"},
+		{key: "return_temperature", name: "Rücklauftemperatur", field: "return", icon: "mdi:thermometer-water"},
+		{key: "dhw_temperature", name: "Warmwasser Ist", field: "dhwActual", icon: "mdi:water-thermometer"},
+		{key: "dhw_setpoint", name: "Warmwasser Soll", field: "dhwSetpoint", icon: "mdi:thermometer-chevron-up"},
+	} {
+		sensors = append(sensors, mqtt.Sensor{
+			Key:         temperature.key,
+			Name:        temperature.name,
+			StateTopic:  TemperaturesTopic(topicPrefix),
+			JSONField:   temperature.field,
+			Unit:        "°C",
+			DeviceClass: "temperature",
+			StateClass:  "measurement",
+			Icon:        temperature.icon,
+		})
+	}
 	for _, circuit := range DefaultHeatingCircuits {
 		sensors = append(sensors, mqtt.Sensor{
 			Key:         circuit.Key + "_summer_winter_mode",

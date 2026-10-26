@@ -21,6 +21,8 @@ const (
 	PathCompressorPower    = "/heatSources/compressor/powerElecActual"
 	PathModulation         = "/heatSources/actualModulation"
 	PathOutdoorTemperature = "/system/sensors/temperatures/outdoor_t1"
+	PathSupplyTemperature  = "/heatSources/actualSupplyTemperature"
+	PathReturnTemperature  = "/heatSources/returnTemperature"
 )
 
 // maxBodySize begrenzt die gelesene Antwortgröße (1 MiB).
@@ -87,6 +89,11 @@ func (c *Client) FetchString(ctx context.Context, path string) (StringResponse, 
 // HeatingCircuitPath erzeugt einen API-Pfad für einen Heizkreis.
 func HeatingCircuitPath(heatingCircuit, resource string) string {
 	return fmt.Sprintf("/heatingCircuits/%s/%s", heatingCircuit, resource)
+}
+
+// DHWCircuitPath erzeugt einen API-Pfad für einen Warmwasserkreis.
+func DHWCircuitPath(dhwCircuit, resource string) string {
+	return fmt.Sprintf("/dhwCircuits/%s/%s", dhwCircuit, resource)
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, target any) error {

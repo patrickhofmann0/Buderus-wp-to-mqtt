@@ -179,6 +179,38 @@ func TestFetchCurrentRoomSetpointOffState(t *testing.T) {
 	}
 }
 
+func TestTemperatureEndpointPaths(t *testing.T) {
+	paths := []string{
+		PathOutdoorTemperature,
+		PathSupplyTemperature,
+		PathReturnTemperature,
+		DHWCircuitPath("dhw1", "actualTemp"),
+		DHWCircuitPath("dhw1", "currentSetpoint"),
+	}
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		found := false
+		for _, path := range paths {
+			if r.URL.Path == path {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("unexpected temperature path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"floatValue","value":20,"unitOfMeasure":"C"}`))
+	})
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			if _, err := client.FetchValue(context.Background(), path); err != nil {
+				t.Fatalf("FetchValue(%q) error = %v", path, err)
+			}
+		})
+	}
+}
+
 func TestValueResponseSensorFault(t *testing.T) {
 	ptr := func(value float64) *float64 { return &value }
 	response := ValueResponse{

@@ -11,6 +11,10 @@ Aktuell werden abgefragt:
 | Verdichterleistung | `/heatSources/compressor/powerElecActual` | aktuelle elektrische Leistung des Verdichters (W) |
 | Modulation | `/heatSources/actualModulation` | aktuelle Modulation (%) |
 | Außentemperatur | `/system/sensors/temperatures/outdoor_t1` | Außentemperatur (°C) |
+| Vorlauftemperatur | `/heatSources/actualSupplyTemperature` | aktuelle Temperatur im Vorlauf (°C) |
+| Rücklauftemperatur | `/heatSources/returnTemperature` | aktuelle Temperatur im Rücklauf (°C) |
+| Warmwasser Ist | `/dhwCircuits/dhw1/actualTemp` | aktuelle Warmwassertemperatur (°C) |
+| Warmwasser Soll | `/dhwCircuits/dhw1/currentSetpoint` | eingestellte Warmwassertemperatur (°C) |
 | HK1 Sommer/Winter | `/heatingCircuits/hc1/currentSuWiMode` | Heizkreisstatus: Winter, Sommer oder Kühlen |
 | HK2 Sommer/Winter | `/heatingCircuits/hc2/currentSuWiMode` | Heizkreisstatus: Winter, Sommer oder Kühlen |
 | HK1 Raumsollwert | `/heatingCircuits/hc1/currentRoomSetpoint` | eingestellte Raumtemperatur (°C) |
@@ -83,7 +87,7 @@ Beispiel mit `MQTT_TOPIC_PREFIX=buderus/wp`:
 | `buderus/wp/heating` | `{"electricity":6265.99,"compressor":6265.99,"eheater":0,"outputProduced":24797.11,"unit":"kWh"}` | ja |
 | `buderus/wp/dhw` | `{"electricity":1100.5,"compressor":1100.5,"eheater":0,"outputProduced":3382.54,"unit":"kWh"}` | ja |
 | `buderus/wp/power` | `{"compressorPower":460,"modulation":13}` | ja |
-| `buderus/wp/temperatures` | `{"outdoor":7.5}` | ja |
+| `buderus/wp/temperatures` | `{"outdoor":7.5,"supply":30.6,"return":30,"dhwActual":43,"dhwSetpoint":48}` | ja |
 | `buderus/wp/hc1` | `{"summerWinterMode":"Winter","roomSetpoint":21}` | ja |
 | `buderus/wp/hc2` | `{"summerWinterMode":"Sommer"}` (Heizkreis aus) | ja |
 
@@ -97,6 +101,10 @@ Beispiel mit `MQTT_TOPIC_PREFIX=buderus/wp`:
 | `compressorPower` | Aktuelle elektrische Leistung des Verdichters in W |
 | `modulation` | Aktuelle Modulation in % |
 | `outdoor` | Außentemperatur in °C |
+| `supply` | Vorlauftemperatur in °C |
+| `return` | Rücklauftemperatur in °C |
+| `dhwActual` | Warmwassertemperatur in °C |
+| `dhwSetpoint` | Eingestellte Warmwassertemperatur in °C |
 | `summerWinterMode` | Heizkreisbetrieb: `Winter`, `Sommer` oder `Kühlen` |
 | `roomSetpoint` | Eingestellte Raumtemperatur in °C; bei ausgeschaltetem Heizkreis (`off`) weggelassen |
 
@@ -104,7 +112,7 @@ Fehlt ein Wert in der Antwort des Gateways, wird das Feld weggelassen. Mit `LOG_
 
 ### Home Assistant
 
-Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw`) vier Energiesensoren sowie Sensoren für Verdichterleistung, Modulation, Außentemperatur, die beiden Heizkreis-Modi und die Raumsollwerte angelegt, gruppiert unter einem Gerät:
+Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw`) vier Energiesensoren sowie Sensoren für Verdichterleistung, Modulation, fünf Temperaturwerte, die beiden Heizkreis-Modi und die Raumsollwerte angelegt, gruppiert unter einem Gerät:
 
 | Sensor-Key | Name |
 |---|---|
@@ -115,6 +123,10 @@ Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw
 | `compressor_power` | Leistung Verdichter (W) |
 | `modulation` | Modulation (%) |
 | `outdoor_temperature` | Außentemperatur (°C) |
+| `supply_temperature` | Vorlauftemperatur (°C) |
+| `return_temperature` | Rücklauftemperatur (°C) |
+| `dhw_temperature` | Warmwasser Ist (°C) |
+| `dhw_setpoint` | Warmwasser Soll (°C) |
 | `hc1_summer_winter_mode` | HK1 Sommer/Winter (Winter, Sommer, Kühlen) |
 | `hc2_summer_winter_mode` | HK2 Sommer/Winter (Winter, Sommer, Kühlen) |
 | `hc1_room_setpoint` | HK1 Raumsollwert (°C) |
@@ -124,7 +136,7 @@ Discovery-Topic: `<MQTT_HA_DISCOVERY_PREFIX>/sensor/<DEVICE_ID>/<sensor-key>/con
 
 Die Energiesensoren haben `device_class: energy` und `state_class: total_increasing` und können direkt im **Energie-Dashboard** verwendet werden. Leistung, Modulation, Temperatur und Raumsollwerte verwenden `state_class: measurement`; die Modus-Sensoren sind Enums mit den Optionen „Winter“, „Sommer“ und „Kühlen“.
 
-Meldet der Außenfühler einen `open`- oder `short`-Fehlerwert, wird kein neuer Temperaturwert veröffentlicht; der letzte retained Wert bleibt bestehen.
+Temperaturfelder mit einem `open`-/`short`-Fehlerwert oder außerhalb von −50 bis 150 °C werden einzeln weggelassen; gültige Temperaturwerte werden weiterhin veröffentlicht. Bei einem fehlenden Feld zeigt Home Assistant den jeweiligen Sensor als „unbekannt“ an.
 
 ## Lokale Entwicklung
 
