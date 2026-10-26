@@ -8,6 +8,8 @@ Aktuell werden abgefragt:
 |---|---|---|
 | Heizung | `/heatSources/emon/chConsumption` | Stromverbrauch (gesamt, Verdichter, Zuheizer), erzeugte Wärme (kWh) |
 | Warmwasser | `/heatSources/emon/dhwConsumption` | Stromverbrauch (gesamt, Verdichter, Zuheizer), erzeugte Wärme (kWh) |
+| Verdichterstarts | `/heatSources/hs1/numberOfStarts` | Anzahl Verdichterstarts Heizung, Warmwasser, Kühlen und gesamt |
+| Betriebszeit | `/heatSources/hs1/workingTime` | Betriebszeit Heizung, Warmwasser, Kühlen und gesamt (s) |
 | Verdichterleistung | `/heatSources/compressor/powerElecActual` | aktuelle elektrische Leistung des Verdichters (W) |
 | Modulation | `/heatSources/actualModulation` | aktuelle Modulation (%) |
 | Außentemperatur | `/system/sensors/temperatures/outdoor_t1` | Außentemperatur (°C) |
@@ -89,6 +91,7 @@ Beispiel mit `MQTT_TOPIC_PREFIX=buderus/wp`:
 | `buderus/wp/dhw` | `{"electricity":1100.5,"compressor":1100.5,"eheater":0,"outputProduced":3382.54,"unit":"kWh"}` | ja |
 | `buderus/wp/power` | `{"compressorPower":460,"modulation":13}` | ja |
 | `buderus/wp/temperatures` | `{"outdoor":7.5,"supply":30.6,"return":30,"dhwActual":43,"dhwSetpoint":48}` | ja |
+| `buderus/wp/maintenance` | `{"startsHeating":737,"startsDhw":194,"startsCooling":0,"startsTotal":931,"workingTimeHeating":19515812,"workingTimeDhw":1135643,"workingTimeCooling":0,"workingTimeTotal":20651456}` | ja |
 | `buderus/wp/hc1` | `{"summerWinterMode":"Winter","roomSetpoint":21}` | ja |
 | `buderus/wp/hc2` | `{"summerWinterMode":"Sommer","mixerPosition":49}` (Heizkreis aus; Mischer vorhanden) | ja |
 
@@ -106,6 +109,14 @@ Beispiel mit `MQTT_TOPIC_PREFIX=buderus/wp`:
 | `return` | Rücklauftemperatur in °C |
 | `dhwActual` | Warmwassertemperatur in °C |
 | `dhwSetpoint` | Eingestellte Warmwassertemperatur in °C |
+| `startsHeating` | Verdichterstarts Heizung |
+| `startsDhw` | Verdichterstarts Warmwasser |
+| `startsCooling` | Verdichterstarts Kühlen; nur im MQTT-Payload, kein Home-Assistant-Sensor |
+| `startsTotal` | Verdichterstarts gesamt |
+| `workingTimeHeating` | Betriebszeit Heizung in Sekunden |
+| `workingTimeDhw` | Betriebszeit Warmwasser in Sekunden |
+| `workingTimeCooling` | Betriebszeit Kühlen in Sekunden; nur im MQTT-Payload, kein Home-Assistant-Sensor |
+| `workingTimeTotal` | Betriebszeit gesamt in Sekunden |
 | `summerWinterMode` | Heizkreisbetrieb: `Winter`, `Sommer` oder `Kühlen` |
 | `roomSetpoint` | Eingestellte Raumtemperatur in °C; bei ausgeschaltetem Heizkreis (`off`) weggelassen |
 | `mixerPosition` | Stellung des Heizkreismischers in %; nur vorhanden, wenn der Heizkreis einen Mischer hat |
@@ -114,7 +125,7 @@ Fehlt ein Wert in der Antwort des Gateways, wird das Feld weggelassen. Mit `LOG_
 
 ### Home Assistant
 
-Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw`) vier Energiesensoren sowie Sensoren für Verdichterleistung, Modulation, fünf Temperaturwerte, die beiden Heizkreis-Modi und die Raumsollwerte angelegt. Die folgende Tabelle listet die Sensor-Keys und Anzeigenamen:
+Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw`) vier Energiesensoren sowie Sensoren für Verdichterleistung, Modulation, fünf Temperaturwerte, Verdichterstarts und Betriebszeiten, die beiden Heizkreis-Modi und die Raumsollwerte angelegt. Die folgende Tabelle listet die Sensor-Keys und Anzeigenamen:
 
 | Sensor-Key | Name |
 |---|---|
@@ -129,6 +140,12 @@ Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw
 | `return_temperature` | Rücklauftemperatur (°C) |
 | `dhw_temperature` | Ist-Temperatur (°C) |
 | `dhw_setpoint` | Solltemperatur (°C) |
+| `compressor_starts_total` | Verdichterstarts |
+| `working_time_total` | Betriebszeit (s) |
+| `compressor_starts_heating` | Verdichterstarts |
+| `working_time_heating` | Betriebszeit (s) |
+| `compressor_starts_dhw` | Verdichterstarts |
+| `working_time_dhw` | Betriebszeit (s) |
 | `hc1_summer_winter_mode` | Sommer/Winter (Winter, Sommer, Kühlen) |
 | `hc2_summer_winter_mode` | Sommer/Winter (Winter, Sommer, Kühlen) |
 | `hc1_room_setpoint` | Raumsollwert (°C) |
@@ -141,15 +158,17 @@ Die Sensoren sind in Home Assistant auf mehrere Geräte verteilt. Untergeräte s
 
 | Home-Assistant-Gerät | Zugeordnete Werte | Geräte-ID |
 |---|---|---|
-| Buderus Wärmepumpe (Hauptgerät) | Verdichterleistung, Modulation, Vorlauf, Rücklauf und Außentemperatur | `<DEVICE_ID>` |
-| Heizung | Energiezähler Heizung | `<DEVICE_ID>_heating` |
-| Warmwasser | Energiezähler und Warmwasser-Ist-/Solltemperatur | `<DEVICE_ID>_dhw` |
+| Buderus Wärmepumpe (Hauptgerät) | Verdichterleistung, Modulation, Vorlauf, Rücklauf, Außentemperatur, Verdichterstarts und Betriebszeit gesamt | `<DEVICE_ID>` |
+| Heizung | Energiezähler Heizung, Verdichterstarts und Betriebszeit Heizung | `<DEVICE_ID>_heating` |
+| Warmwasser | Energiezähler, Warmwasser-Ist-/Solltemperatur, Verdichterstarts und Betriebszeit Warmwasser | `<DEVICE_ID>_dhw` |
 | Heizkreis 1 | Modus und Raumsollwert | `<DEVICE_ID>_hc1` |
 | Heizkreis 2 | Modus, Raumsollwert und ggf. Mischerstellung | `<DEVICE_ID>_hc2` |
 
+Verdichterstarts und Betriebszeit für Kühlen stehen nur im MQTT-Payload (`startsCooling`, `workingTimeCooling`); dafür werden keine Home-Assistant-Sensoren angelegt.
+
 Discovery-Topics und Entitäts-IDs bleiben weiterhin auf `<DEVICE_ID>` basierend. Dadurch bleiben `unique_id`, Entity-IDs und die Zuordnung vorhandener Statistiken erhalten; nur die Gerätezuordnung ändert sich. Sensor-Namen enthalten nicht erneut den Gerätenamen, da Home Assistant diesen im Kontext des Geräts ergänzt.
 
-Die Energiesensoren haben `device_class: energy` und `state_class: total_increasing` und können direkt im **Energie-Dashboard** verwendet werden. Leistung, Modulation, Temperatur und Raumsollwerte verwenden `state_class: measurement`; die Modus-Sensoren sind Enums mit den Optionen „Winter“, „Sommer“ und „Kühlen“.
+Die Energiesensoren haben `device_class: energy` und `state_class: total_increasing` und können direkt im **Energie-Dashboard** verwendet werden. Verdichterstarts verwenden `state_class: total_increasing`; Betriebszeiten in Sekunden verwenden `device_class: duration` und ebenfalls `state_class: total_increasing`. Leistung, Modulation, Temperatur und Raumsollwerte verwenden `state_class: measurement`; die Modus-Sensoren sind Enums mit den Optionen „Winter“, „Sommer“ und „Kühlen“.
 
 Temperaturfelder mit einem `open`-/`short`-Fehlerwert oder außerhalb von −50 bis 150 °C werden einzeln weggelassen; gültige Temperaturwerte werden weiterhin veröffentlicht. Bei einem fehlenden Feld zeigt Home Assistant den jeweiligen Sensor als „unbekannt“ an.
 

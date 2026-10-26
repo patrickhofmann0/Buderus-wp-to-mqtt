@@ -20,6 +20,7 @@ import (
 // es reicht, die Methoden zu haben. Dadurch lässt sich im Test leicht ein Fake einsetzen.
 type Fetcher interface {
 	FetchEmon(ctx context.Context, path string) (buderus.EmonResponse, error)
+	FetchCounter(ctx context.Context, path string) (buderus.CounterResponse, error)
 	FetchValue(ctx context.Context, path string) (buderus.ValueResponse, error)
 	FetchString(ctx context.Context, path string) (buderus.StringResponse, error)
 }
@@ -112,6 +113,20 @@ type TemperaturesPayload struct {
 	DHWSetpoint *float64 `json:"dhwSetpoint,omitempty"`
 }
 
+// MaintenancePayload ist der JSON-Inhalt des Wartungstopics:
+// Verdichterstarts und Betriebszeiten in Sekunden. Nicht gelieferte Werte werden weggelassen.
+// Kühlwerte stehen nur im Payload; dafür gibt es keine Home-Assistant-Sensoren.
+type MaintenancePayload struct {
+	StartsHeating      *float64 `json:"startsHeating,omitempty"`
+	StartsDHW          *float64 `json:"startsDhw,omitempty"`
+	StartsCooling      *float64 `json:"startsCooling,omitempty"`
+	StartsTotal        *float64 `json:"startsTotal,omitempty"`
+	WorkingTimeHeating *float64 `json:"workingTimeHeating,omitempty"`
+	WorkingTimeDHW     *float64 `json:"workingTimeDhw,omitempty"`
+	WorkingTimeCooling *float64 `json:"workingTimeCooling,omitempty"`
+	WorkingTimeTotal   *float64 `json:"workingTimeTotal,omitempty"`
+}
+
 // Poller fragt die Werte regelmäßig ab und veröffentlicht sie.
 type Poller struct {
 	fetcher         Fetcher
@@ -149,6 +164,11 @@ func TemperaturesTopic(topicPrefix string) string {
 	return topicPrefix + "/temperatures"
 }
 
+// MaintenanceTopic liefert das Topic für Verdichterstarts und Betriebszeiten.
+func MaintenanceTopic(topicPrefix string) string {
+	return topicPrefix + "/maintenance"
+}
+
 // Run fragt sofort und danach im angegebenen Intervall ab, bis ctx beendet wird.
 // Fehler werden geloggt; das Programm läuft weiter.
 func (p *Poller) Run(ctx context.Context, interval time.Duration) {
@@ -179,6 +199,9 @@ func (p *Poller) PollOnce(ctx context.Context) {
 	}
 	if err := p.pollTemperatures(ctx); err != nil {
 		p.logger.Error("poll failed", "group", "temperatures", "error", err)
+	}
+	if err := p.pollMaintenance(ctx); err != nil {
+		p.logger.Error("poll failed", "group", "maintenance", "error", err)
 	}
 	for _, circuit := range p.heatingCircuits {
 		if err := p.pollHeatingCircuit(ctx, circuit); err != nil {
@@ -337,6 +360,49 @@ func (p *Poller) pollTemperatures(ctx context.Context) error {
 	return nil
 }
 
+func (p *Poller) pollMaintenance(ctx context.Context) error {
+	var state MaintenancePayload
+
+	starts, err := p.fetcher.FetchCounter(ctx, buderus.PathNumberOfStarts)
+	if err != nil {
+		p.logger.Error("poll failed", "path", buderus.PathNumberOfStarts, "error", err)
+	} else {
+		state.StartsHeating = starts.Values.Get("ch")
+		state.StartsDHW = starts.Values.Get("dhw")
+		state.StartsCooling = starts.Values.Get("cooling")
+		state.StartsTotal = starts.Values.Get("total")
+	}
+
+	workingTime, err := p.fetcher.FetchCounter(ctx, buderus.PathWorkingTime)
+	if err != nil {
+		p.logger.Error("poll failed", "path", buderus.PathWorkingTime, "error", err)
+	} else if workingTime.Unit != "" && workingTime.Unit != "s" {
+		p.logger.Warn("unexpected working time unit; skipping working times", "unit", workingTime.Unit)
+	} else {
+		state.WorkingTimeHeating = workingTime.Values.Get("ch")
+		state.WorkingTimeDHW = workingTime.Values.Get("dhw")
+		state.WorkingTimeCooling = workingTime.Values.Get("cooling")
+		state.WorkingTimeTotal = workingTime.Values.Get("total")
+	}
+
+	if state.StartsHeating == nil && state.StartsDHW == nil && state.StartsCooling == nil && state.StartsTotal == nil &&
+		state.WorkingTimeHeating == nil && state.WorkingTimeDHW == nil && state.WorkingTimeCooling == nil && state.WorkingTimeTotal == nil {
+		return nil
+	}
+
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshal maintenance state: %w", err)
+	}
+
+	topic := MaintenanceTopic(p.topicPrefix)
+	if err := p.publisher.Publish(ctx, topic, payload, true); err != nil {
+		return err
+	}
+	p.logger.Debug("published", "topic", topic, "payload", string(payload))
+	return nil
+}
+
 func (p *Poller) pollCircuit(ctx context.Context, c Circuit) error {
 	resp, err := p.fetcher.FetchEmon(ctx, c.Path)
 	if err != nil {
@@ -481,6 +547,69 @@ func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCi
 				SubDevice:  &mqtt.SubDevice{Key: circuit.Key, Name: circuit.Label},
 			})
 		}
+	}
+	// Kühlwerte werden nur im Wartungspayload veröffentlicht, nicht als HA-Sensoren angelegt.
+	for _, maintenanceSensor := range []mqtt.Sensor{
+		{
+			Key:        "compressor_starts_total",
+			Name:       "Verdichterstarts",
+			StateTopic: MaintenanceTopic(topicPrefix),
+			JSONField:  "startsTotal",
+			StateClass: "total_increasing",
+			Icon:       "mdi:counter",
+		},
+		{
+			Key:         "working_time_total",
+			Name:        "Betriebszeit",
+			StateTopic:  MaintenanceTopic(topicPrefix),
+			JSONField:   "workingTimeTotal",
+			Unit:        "s",
+			DeviceClass: "duration",
+			StateClass:  "total_increasing",
+			Icon:        "mdi:timer-outline",
+		},
+		{
+			Key:        "compressor_starts_heating",
+			Name:       "Verdichterstarts",
+			StateTopic: MaintenanceTopic(topicPrefix),
+			JSONField:  "startsHeating",
+			StateClass: "total_increasing",
+			Icon:       "mdi:counter",
+			SubDevice:  &mqtt.SubDevice{Key: "heating", Name: "Heizung"},
+		},
+		{
+			Key:         "working_time_heating",
+			Name:        "Betriebszeit",
+			StateTopic:  MaintenanceTopic(topicPrefix),
+			JSONField:   "workingTimeHeating",
+			Unit:        "s",
+			DeviceClass: "duration",
+			StateClass:  "total_increasing",
+			Icon:        "mdi:timer-outline",
+			SubDevice:   &mqtt.SubDevice{Key: "heating", Name: "Heizung"},
+		},
+		{
+			Key:        "compressor_starts_dhw",
+			Name:       "Verdichterstarts",
+			StateTopic: MaintenanceTopic(topicPrefix),
+			JSONField:  "startsDhw",
+			StateClass: "total_increasing",
+			Icon:       "mdi:counter",
+			SubDevice:  &mqtt.SubDevice{Key: "dhw", Name: "Warmwasser"},
+		},
+		{
+			Key:         "working_time_dhw",
+			Name:        "Betriebszeit",
+			StateTopic:  MaintenanceTopic(topicPrefix),
+			JSONField:   "workingTimeDhw",
+			Unit:        "s",
+			DeviceClass: "duration",
+			StateClass:  "total_increasing",
+			Icon:        "mdi:timer-outline",
+			SubDevice:   &mqtt.SubDevice{Key: "dhw", Name: "Warmwasser"},
+		},
+	} {
+		sensors = append(sensors, maintenanceSensor)
 	}
 
 	// Home Assistant muss das Hauptgerät kennen, bevor es Untergeräte über via_device verknüpfen kann.

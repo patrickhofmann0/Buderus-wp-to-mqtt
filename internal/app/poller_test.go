@@ -8,15 +8,18 @@ import (
 	"testing"
 
 	"github.com/patrickhofmann0/Buderus-wp-to-mqtt/internal/buderus"
+	"github.com/patrickhofmann0/Buderus-wp-to-mqtt/internal/mqtt"
 )
 
 // fakeFetcher liefert vordefinierte Antworten pro Pfad (≈ Mockito-Mock, nur handgeschrieben).
 type fakeFetcher struct {
-	responses  map[string]buderus.EmonResponse
-	values     map[string]buderus.ValueResponse
-	strings    map[string]buderus.StringResponse
-	errs       map[string]error
-	valueCalls []string
+	responses    map[string]buderus.EmonResponse
+	counters     map[string]buderus.CounterResponse
+	values       map[string]buderus.ValueResponse
+	strings      map[string]buderus.StringResponse
+	errs         map[string]error
+	valueCalls   []string
+	counterCalls map[string]int
 }
 
 func (f *fakeFetcher) FetchEmon(_ context.Context, path string) (buderus.EmonResponse, error) {
@@ -24,6 +27,17 @@ func (f *fakeFetcher) FetchEmon(_ context.Context, path string) (buderus.EmonRes
 		return buderus.EmonResponse{}, err
 	}
 	return f.responses[path], nil
+}
+
+func (f *fakeFetcher) FetchCounter(_ context.Context, path string) (buderus.CounterResponse, error) {
+	if f.counterCalls == nil {
+		f.counterCalls = make(map[string]int)
+	}
+	f.counterCalls[path]++
+	if err := f.errs[path]; err != nil {
+		return buderus.CounterResponse{}, err
+	}
+	return f.counters[path], nil
 }
 
 func (f *fakeFetcher) FetchValue(_ context.Context, path string) (buderus.ValueResponse, error) {
@@ -65,6 +79,15 @@ func TestPollOnce(t *testing.T) {
 			buderus.PathHeatingConsumption: {
 				Unit:   "kWh",
 				Values: buderus.EmonValues{Compressor: ptr(12.5), EHeater: ptr(0), OutputProduced: ptr(40)},
+			},
+		},
+		counters: map[string]buderus.CounterResponse{
+			buderus.PathNumberOfStarts: {
+				Values: buderus.CounterValues{"ch": 737, "dhw": 194, "cooling": 0, "total": 931},
+			},
+			buderus.PathWorkingTime: {
+				Unit:   "s",
+				Values: buderus.CounterValues{"ch": 19515812, "dhw": 1135643, "cooling": 0, "total": 20651456},
 			},
 		},
 		values: map[string]buderus.ValueResponse{
@@ -114,6 +137,13 @@ func TestPollOnce(t *testing.T) {
 	if !publisher.retained["buderus/wp/temperatures"] {
 		t.Error("temperature state should be retained")
 	}
+	wantMaintenance := `{"startsHeating":737,"startsDhw":194,"startsCooling":0,"startsTotal":931,"workingTimeHeating":19515812,"workingTimeDhw":1135643,"workingTimeCooling":0,"workingTimeTotal":20651456}`
+	if got := publisher.published["buderus/wp/maintenance"]; got != wantMaintenance {
+		t.Errorf("maintenance payload = %s, want %s", got, wantMaintenance)
+	}
+	if !publisher.retained["buderus/wp/maintenance"] {
+		t.Error("maintenance state should be retained")
+	}
 	if got := publisher.published["buderus/wp/hc1"]; got != `{"summerWinterMode":"Winter","roomSetpoint":21}` {
 		t.Errorf("hc1 payload = %s, want Winter mode and 21 °C setpoint", got)
 	}
@@ -127,6 +157,103 @@ func TestPollOnce(t *testing.T) {
 		if path == buderus.HeatingCircuitPath("hc1", "mixerPosition") {
 			t.Error("mixer position should not be queried for hc1 without a mixer")
 		}
+	}
+}
+
+func TestMaintenanceStartsErrorStillPublishesWorkingTime(t *testing.T) {
+	fetcher := &fakeFetcher{
+		counters: map[string]buderus.CounterResponse{
+			buderus.PathWorkingTime: {
+				Unit:   "s",
+				Values: buderus.CounterValues{"ch": 10, "dhw": 20, "total": 30},
+			},
+		},
+		errs: map[string]error{
+			buderus.PathNumberOfStarts: errors.New("starts endpoint unavailable"),
+		},
+	}
+	publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
+	poller := NewPoller(fetcher, publisher, "buderus/wp", nil, nil, discardLogger())
+
+	if err := poller.pollMaintenance(context.Background()); err != nil {
+		t.Fatalf("pollMaintenance() error = %v", err)
+	}
+	if got := publisher.published["buderus/wp/maintenance"]; got != `{"workingTimeHeating":10,"workingTimeDhw":20,"workingTimeTotal":30}` {
+		t.Errorf("maintenance payload = %s, want working times only", got)
+	}
+}
+
+func TestMaintenanceMissingCoolingIsOmitted(t *testing.T) {
+	fetcher := &fakeFetcher{
+		counters: map[string]buderus.CounterResponse{
+			buderus.PathNumberOfStarts: {
+				Values: buderus.CounterValues{"ch": 737, "dhw": 194, "pool": 5, "total": 931},
+			},
+			buderus.PathWorkingTime: {
+				Values: buderus.CounterValues{"ch": 100, "dhw": 200, "pool": 300, "total": 400},
+			},
+		},
+	}
+	publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
+	poller := NewPoller(fetcher, publisher, "buderus/wp", nil, nil, discardLogger())
+
+	if err := poller.pollMaintenance(context.Background()); err != nil {
+		t.Fatalf("pollMaintenance() error = %v", err)
+	}
+	want := `{"startsHeating":737,"startsDhw":194,"startsTotal":931,"workingTimeHeating":100,"workingTimeDhw":200,"workingTimeTotal":400}`
+	if got := publisher.published["buderus/wp/maintenance"]; got != want {
+		t.Errorf("maintenance payload = %s, want %s", got, want)
+	}
+}
+
+func TestMaintenanceBothFailNothingPublished(t *testing.T) {
+	fetcher := &fakeFetcher{
+		values: map[string]buderus.ValueResponse{
+			buderus.PathCompressorPower: {Value: ptr(460)},
+		},
+		errs: map[string]error{
+			buderus.PathNumberOfStarts: errors.New("starts endpoint unavailable"),
+			buderus.PathWorkingTime:    buderus.ErrNotFound,
+		},
+	}
+	publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
+	poller := NewPoller(fetcher, publisher, "buderus/wp", nil, nil, discardLogger())
+
+	poller.PollOnce(context.Background())
+	if _, ok := publisher.published["buderus/wp/maintenance"]; ok {
+		t.Error("maintenance should not be published when both counter requests fail")
+	}
+	if _, ok := publisher.published["buderus/wp/power"]; !ok {
+		t.Error("other groups should still be published when maintenance requests fail")
+	}
+	poller.PollOnce(context.Background())
+	for _, path := range []string{buderus.PathNumberOfStarts, buderus.PathWorkingTime} {
+		if got := fetcher.counterCalls[path]; got != 2 {
+			t.Errorf("counter calls for %s = %d, want 2 after consecutive polls", path, got)
+		}
+	}
+}
+
+func TestMaintenanceUnexpectedUnitSkipsWorkingTime(t *testing.T) {
+	fetcher := &fakeFetcher{
+		counters: map[string]buderus.CounterResponse{
+			buderus.PathNumberOfStarts: {
+				Values: buderus.CounterValues{"ch": 7, "total": 7},
+			},
+			buderus.PathWorkingTime: {
+				Unit:   "h",
+				Values: buderus.CounterValues{"ch": 10, "total": 10},
+			},
+		},
+	}
+	publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
+	poller := NewPoller(fetcher, publisher, "buderus/wp", nil, nil, discardLogger())
+
+	if err := poller.pollMaintenance(context.Background()); err != nil {
+		t.Fatalf("pollMaintenance() error = %v", err)
+	}
+	if got := publisher.published["buderus/wp/maintenance"]; got != `{"startsHeating":7,"startsTotal":7}` {
+		t.Errorf("maintenance payload = %s, want starts only", got)
 	}
 }
 
@@ -350,8 +477,8 @@ func TestTranslateSummerWinterMode(t *testing.T) {
 func TestSensors(t *testing.T) {
 	heatingCircuits := []HeatingCircuit{{Key: "hc1", Label: "Heizkreis 1"}, {Key: "hc2", Label: "Heizkreis 2", HasMixer: true}}
 	sensors := Sensors("buderus/wp", DefaultCircuits, heatingCircuits)
-	if len(sensors) != 20 {
-		t.Fatalf("got %d sensors, want 20", len(sensors))
+	if len(sensors) != 26 {
+		t.Fatalf("got %d sensors, want 26", len(sensors))
 	}
 	seenSubDevice := false
 	for _, sensor := range sensors {
@@ -381,11 +508,46 @@ func TestSensors(t *testing.T) {
 		"hc1_room_setpoint",
 		"hc2_room_setpoint",
 		"hc2_mixer_position",
+		"compressor_starts_total",
+		"working_time_total",
+		"compressor_starts_heating",
+		"working_time_heating",
+		"compressor_starts_dhw",
+		"working_time_dhw",
 	} {
 		if !keys[key] {
 			t.Errorf("missing sensor %q", key)
 		}
 	}
+	maintenanceSensors := map[string]struct {
+		name        string
+		jsonField   string
+		unit        string
+		deviceClass string
+		stateClass  string
+		icon        string
+		subDevice   *mqtt.SubDevice
+	}{
+		"compressor_starts_total": {name: "Verdichterstarts", jsonField: "startsTotal", stateClass: "total_increasing", icon: "mdi:counter"},
+		"working_time_total":      {name: "Betriebszeit", jsonField: "workingTimeTotal", unit: "s", deviceClass: "duration", stateClass: "total_increasing", icon: "mdi:timer-outline"},
+		"compressor_starts_heating": {
+			name: "Verdichterstarts", jsonField: "startsHeating", stateClass: "total_increasing", icon: "mdi:counter",
+			subDevice: &mqtt.SubDevice{Key: "heating", Name: "Heizung"},
+		},
+		"working_time_heating": {
+			name: "Betriebszeit", jsonField: "workingTimeHeating", unit: "s", deviceClass: "duration", stateClass: "total_increasing", icon: "mdi:timer-outline",
+			subDevice: &mqtt.SubDevice{Key: "heating", Name: "Heizung"},
+		},
+		"compressor_starts_dhw": {
+			name: "Verdichterstarts", jsonField: "startsDhw", stateClass: "total_increasing", icon: "mdi:counter",
+			subDevice: &mqtt.SubDevice{Key: "dhw", Name: "Warmwasser"},
+		},
+		"working_time_dhw": {
+			name: "Betriebszeit", jsonField: "workingTimeDhw", unit: "s", deviceClass: "duration", stateClass: "total_increasing", icon: "mdi:timer-outline",
+			subDevice: &mqtt.SubDevice{Key: "dhw", Name: "Warmwasser"},
+		},
+	}
+	foundMaintenanceSensors := make(map[string]bool, len(maintenanceSensors))
 	foundCompressorPower, foundModulation, foundOutdoorTemperature := false, false, false
 	foundTemperatures := map[string]bool{}
 	foundHeatingModes := map[string]bool{}
@@ -398,6 +560,19 @@ func TestSensors(t *testing.T) {
 		"hc2_room_setpoint": "buderus/wp/hc2",
 	}
 	for _, s := range sensors {
+		if want, ok := maintenanceSensors[s.Key]; ok {
+			foundMaintenanceSensors[s.Key] = true
+			if s.StateTopic != "buderus/wp/maintenance" || s.Name != want.name || s.JSONField != want.jsonField || s.Unit != want.unit || s.DeviceClass != want.deviceClass || s.StateClass != want.stateClass || s.Icon != want.icon {
+				t.Errorf("unexpected maintenance sensor %q: %+v", s.Key, s)
+			}
+			if want.subDevice == nil {
+				if s.SubDevice != nil {
+					t.Errorf("maintenance sensor %q has sub-device %+v, want main device", s.Key, s.SubDevice)
+				}
+			} else if s.SubDevice == nil || s.SubDevice.Key != want.subDevice.Key || s.SubDevice.Name != want.subDevice.Name {
+				t.Errorf("maintenance sensor %q sub-device = %+v, want %+v", s.Key, s.SubDevice, want.subDevice)
+			}
+		}
 		if s.Key == "heating_electricity" {
 			foundHeatingDevice = s.Name == "Stromverbrauch" && s.SubDevice != nil && s.SubDevice.Key == "heating" && s.SubDevice.Name == "Heizung"
 		}
@@ -455,6 +630,14 @@ func TestSensors(t *testing.T) {
 		if s.Key == "hc1_mixer_position" {
 			t.Error("mixer sensor should not be created for hc1")
 		}
+	}
+	for key := range maintenanceSensors {
+		if !foundMaintenanceSensors[key] {
+			t.Errorf("maintenance sensor %q not found", key)
+		}
+	}
+	if keys["compressor_starts_cooling"] || keys["working_time_cooling"] {
+		t.Error("cooling maintenance values must not have Home Assistant sensors")
 	}
 	if !foundCompressorPower {
 		t.Error("compressor_power sensor not found")

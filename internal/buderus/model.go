@@ -21,6 +21,53 @@ type EmonResponse struct {
 	Unit   string     `json:"unit"`
 }
 
+// CounterResponse ist die Antwort von Zählerendpunkten wie
+// /heatSources/hs1/numberOfStarts oder /heatSources/hs1/workingTime.
+//
+// Beispiel:
+//
+//	{"values":[{"ch":737},{"dhw":194},{"cooling":0},{"total":931}]}
+type CounterResponse struct {
+	ID     string        `json:"id"`
+	Type   string        `json:"type"`
+	Values CounterValues `json:"values"`
+	Unit   string        `json:"unit"`
+}
+
+// CounterValues bildet die Liste einzelner Objekte auf Schlüssel → Wert ab
+// (≈ Map<String, Double> in Java).
+type CounterValues map[string]float64
+
+// UnmarshalJSON wandelt die Liste einzelner Objekte in eine Map um.
+// Die API liefert z. B. [{"ch":737},{"dhw":194}] statt eines einzelnen Objekts.
+//
+// Für Java-Entwickler: Das entspricht einem eigenen Jackson-JsonDeserializer.
+// encoding/json ruft diese Methode automatisch auf, weil CounterValues das
+// Interface json.Unmarshaler implementiert (implizit, ohne "implements").
+func (v *CounterValues) UnmarshalJSON(data []byte) error {
+	var entries []map[string]float64
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return fmt.Errorf("decode counter values: %w", err)
+	}
+
+	*v = make(CounterValues)
+	for _, entry := range entries {
+		for key, value := range entry {
+			(*v)[key] = value
+		}
+	}
+	return nil
+}
+
+// Get liefert einen Zählerwert; nil bedeutet, dass ihn das Gateway nicht geliefert hat.
+func (v CounterValues) Get(key string) *float64 {
+	value, ok := v[key]
+	if !ok {
+		return nil
+	}
+	return &value
+}
+
 // ValueResponse ist die Antwort eines Endpunkts, der einen einzelnen Messwert liefert.
 type ValueResponse struct {
 	ID            string               `json:"id"`

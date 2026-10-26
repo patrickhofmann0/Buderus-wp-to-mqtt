@@ -64,6 +64,74 @@ func TestFetchEmon(t *testing.T) {
 	}
 }
 
+func TestFetchCounter(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != PathWorkingTime {
+			t.Errorf("path = %q, want %q", r.URL.Path, PathWorkingTime)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Errorf("Authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"values":[{"ch":19515812},{"dhw":1135643},{"cooling":0},{"total":20651456}],"unit":"s"}`))
+	})
+
+	got, err := client.FetchCounter(context.Background(), PathWorkingTime)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Unit != "s" {
+		t.Errorf("Unit = %q, want s", got.Unit)
+	}
+	for key, want := range map[string]float64{
+		"ch":      19515812,
+		"dhw":     1135643,
+		"cooling": 0,
+		"total":   20651456,
+	} {
+		if value := got.Values.Get(key); value == nil || *value != want {
+			t.Errorf("Values.Get(%q) = %v, want %v", key, value, want)
+		}
+	}
+}
+
+func TestFetchCounterMissingAndUnknownKeys(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"values":[{"ch":737},{"dhw":194},{"pool":42},{"total":931}]}`))
+	})
+
+	got, err := client.FetchCounter(context.Background(), PathNumberOfStarts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if value := got.Values.Get("cooling"); value != nil {
+		t.Errorf("Values.Get(cooling) = %v, want nil", value)
+	}
+	if value := got.Values.Get("pool"); value == nil || *value != 42 {
+		t.Errorf("Values.Get(pool) = %v, want 42", value)
+	}
+}
+
+func TestFetchCounterNotFound(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	if _, err := client.FetchCounter(context.Background(), PathNumberOfStarts); !errors.Is(err, ErrNotFound) {
+		t.Errorf("FetchCounter() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestFetchCounterInvalidValues(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"values":"x"}`))
+	})
+	if _, err := client.FetchCounter(context.Background(), PathNumberOfStarts); err == nil {
+		t.Fatal("expected error for invalid counter values")
+	}
+}
+
 func TestFetchValue(t *testing.T) {
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != PathCompressorPower {

@@ -22,6 +22,9 @@ var ErrNotFound = errors.New("gateway resource not found")
 const (
 	PathHeatingConsumption = "/heatSources/emon/chConsumption"
 	PathDHWConsumption     = "/heatSources/emon/dhwConsumption"
+	// Zähler der Wärmequelle hs1: Verdichterstarts und Betriebszeit in Sekunden.
+	PathNumberOfStarts     = "/heatSources/hs1/numberOfStarts"
+	PathWorkingTime        = "/heatSources/hs1/workingTime"
 	PathCompressorPower    = "/heatSources/compressor/powerElecActual"
 	PathModulation         = "/heatSources/actualModulation"
 	PathOutdoorTemperature = "/system/sensors/temperatures/outdoor_t1"
@@ -68,6 +71,15 @@ func (c *Client) FetchEmon(ctx context.Context, path string) (EmonResponse, erro
 	var result EmonResponse
 	if err := c.getJSON(ctx, path, &result); err != nil {
 		return EmonResponse{}, err
+	}
+	return result, nil
+}
+
+// FetchCounter ruft einen Zählerendpunkt ab, z. B. PathNumberOfStarts.
+func (c *Client) FetchCounter(ctx context.Context, path string) (CounterResponse, error) {
+	var result CounterResponse
+	if err := c.getJSON(ctx, path, &result); err != nil {
+		return CounterResponse{}, err
 	}
 	return result, nil
 }
