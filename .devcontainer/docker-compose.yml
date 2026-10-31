@@ -1,0 +1,36 @@
+# Ergänzt docker-compose.dev.yml (Mosquitto) um den Entwicklungs-Container.
+# Relative Pfade beziehen sich auf dieses Verzeichnis (.devcontainer/), weil
+# diese Datei in devcontainer.json als erste angegeben ist.
+services:
+  dev:
+    # Das Image baut initialize.sh vorab mit "docker build". Ein build-Abschnitt
+    # hier würde VS Code über "docker compose build" (buildx bake) bauen lassen,
+    # was ab Compose v5 am generierten Dockerfile unter /tmp scheitert.
+    image: buderus2mqtt-devcontainer
+    pull_policy: never
+    command: sleep infinity
+    environment:
+      MQTT_BROKER: tcp://mosquitto:1883
+    depends_on:
+      - mosquitto
+    volumes:
+      - ..:/workspaces/Buderus-wp-to-mqtt:cached
+      - go-mod-cache:/go/pkg/mod
+      # Datenbank von opencode (Sitzungen und Anmeldung). opencode V2 speichert
+      # Zugangsdaten in SQLite statt in auth.json; nach einmaligem
+      # "opencode auth login" bleibt die Anmeldung über Rebuilds erhalten.
+      # Bewusst getrennt vom Host, damit nicht zwei Dienste dieselbe DB nutzen.
+      - opencode-data:/home/vscode/.local/share/opencode
+      # Terminal-Einstellungen vom Host (Theme, Tastenkürzel usw.).
+      # create_host_path: false lässt den Start scheitern, statt ein leeres
+      # Verzeichnis anzulegen, falls die Datei fehlt.
+      - type: bind
+        source: ${HOME}/.config/opencode/cli.json
+        target: /home/vscode/.config/opencode/cli.json
+        read_only: true
+        bind:
+          create_host_path: false
+
+volumes:
+  go-mod-cache:
+  opencode-data:

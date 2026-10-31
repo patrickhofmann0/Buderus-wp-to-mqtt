@@ -183,7 +183,7 @@ Beim Start prüft der Dienst für `hc1` und `hc2`, ob der Mischer-Endpunkt verf�
 - Docker (für lokalen MQTT-Broker und Image-Build)
 - optional `make` und `mosquitto-clients` (`mosquitto_sub`)
 
-Als IDE eignen sich GoLand (IntelliJ-basiert, für Java-Entwickler vertraut) oder VS Code mit der Go-Extension.
+Als IDE eignen sich GoLand (IntelliJ-basiert, für Java-Entwickler vertraut) oder VS Code mit der Go-Extension. Ohne lokale Installation geht es auch mit dem [Dev Container](#dev-container-vs-code--intellij).
 
 ### Ablauf
 
@@ -220,6 +220,37 @@ Tipp: Mit `POLL_INTERVAL=30s` und `LOG_LEVEL=debug` sieht man schneller Ergebnis
 | `make docker` | `docker build --build-arg VERSION=dev -t buderus2mqtt:dev .` | Docker-Image lokal bauen |
 
 Einzelnen Test ausführen: `go test ./internal/config -run TestSlugify -v`
+
+### Dev Container (VS Code / IntelliJ)
+
+Unter `.devcontainer/` liegt ein Dev Container mit Go 1.27, golangci-lint v2.15.0 (wie CI), `make`, `mosquitto-clients` und [opencode](https://opencode.ai) 2.0.19. Zusammen mit dem Container startet der Mosquitto-Broker aus `docker-compose.dev.yml`. Das Repo wird nach `/workspaces/Buderus-wp-to-mqtt` gemountet.
+
+Voraussetzungen auf dem Host: Docker und `~/.config/opencode/cli.json` (wird beim ersten Start von opencode angelegt; die Terminal-Einstellungen werden schreibgeschützt übernommen).
+
+- Docker Engine aus dem [offiziellen Docker-Repository](https://docs.docker.com/engine/install/ubuntu/) installieren, **nicht als Snap**: Snap-Docker darf keine versteckten Verzeichnisse wie `~/.config` lesen, dort legt VS Code aber seine Compose-Dateien ab.
+- Das Image baut `.devcontainer/initialize.sh` vor jedem Start auf dem Host mit `docker build` (Tag `buderus2mqtt-devcontainer`; dank Cache schnell). Nicht über `docker compose build`, da Compose v5 („buildx bake“) das generierte Dockerfile der Dev-Containers-Erweiterung unter `/tmp` ablehnt.
+
+1. Container öffnen:
+   - **VS Code:** Erweiterung *Dev Containers* (`ms-vscode-remote.remote-containers`) installieren, Repo öffnen → `F1` → *Dev Containers: Reopen in Container*. Die Go-Erweiterung wird im Container automatisch installiert und nutzt golangci-lint v2.
+   - **IntelliJ Ultimate / GoLand:** `.devcontainer/devcontainer.json` öffnen → Container-Symbol in der Gutter-Leiste → *Create Dev Container and Mount Sources…*
+2. Einmalig im Container-Terminal anmelden und *GitHub Copilot* wählen:
+   ```sh
+   opencode auth login
+   ```
+   opencode V2 speichert die Anmeldung in seiner Datenbank. Diese liegt im Docker-Volume `opencode-data` und bleibt bei Rebuilds erhalten. Sitzungen im Container sind getrennt von denen auf dem Host. Erst nach `docker volume rm` ist eine neue Anmeldung nötig.
+3. Prüfen:
+   ```sh
+   opencode auth list
+   golangci-lint run
+   go test -race ./...
+   mosquitto_sub -h mosquitto -t 'buderus/#' -t 'homeassistant/#' -v
+   ```
+
+Im Container ist `MQTT_BROKER=tcp://mosquitto:1883` gesetzt. `make run` lädt jedoch `.env`; dort muss für den Container ebenfalls `MQTT_BROKER=tcp://mosquitto:1883` stehen.
+
+Für opencode ist das VS-Code-Terminal im Container angepasst: Terminals öffnen als Editor-Tab, Farben werden nicht nachkorrigiert, und Tastenkürzel wie `Ctrl+P` gehen im Terminal an opencode statt an VS Code (außerhalb des Terminals funktionieren sie normal). Änderungen an `devcontainer.json` wirken erst nach *Dev Containers: Rebuild Container*.
+
+Für ein Update von opencode `OPENCODE_VERSION` in `.devcontainer/Dockerfile` erhöhen und den Container neu bauen (*Dev Containers: Rebuild Container*). Ein Neubau ohne Cache, etwa für aktuelle Basis-Images, geht nur auf dem Host: `docker build --no-cache -t buderus2mqtt-devcontainer .devcontainer`.
 
 ### Ohne lokale Go-Installation
 

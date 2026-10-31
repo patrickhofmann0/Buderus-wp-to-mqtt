@@ -1,0 +1,29 @@
+{
+  "name": "buderus2mqtt",
+  "dockerComposeFile": ["docker-compose.yml", "../docker-compose.dev.yml"],
+  "service": "dev",
+  "runServices": ["dev", "mosquitto"],
+  "workspaceFolder": "/workspaces/Buderus-wp-to-mqtt",
+  "remoteUser": "vscode",
+  "initializeCommand": "bash .devcontainer/initialize.sh",
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "customizations": {
+    "jetbrains": {
+      "backend": "IntelliJ",
+      "plugins": ["org.jetbrains.plugins.go"]
+    },
+    "vscode": {
+      "extensions": ["golang.go"],
+      "settings": {
+        "go.lintTool": "golangci-lint-v2",
+        "go.lintOnSave": "package",
+        "go.formatTool": "default",
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "terminal.integrated.sendKeybindingsToShell": true,
+        "terminal.integrated.minimumContrastRatio": 1,
+        "terminal.integrated.gpuAcceleration": "on",
+        "terminal.integrated.defaultLocation": "editor"
+      }
+    }
+  }
+}
