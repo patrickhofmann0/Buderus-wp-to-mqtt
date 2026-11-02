@@ -35,6 +35,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.DeviceID != "buderus_warmepumpe" {
 		t.Errorf("DeviceID = %q, want %q", cfg.DeviceID, "buderus_warmepumpe")
 	}
+	if cfg.WebEnabled {
+		t.Error("WebEnabled = true, want false")
+	}
+	if cfg.WebListen != ":8080" {
+		t.Errorf("WebListen = %q, want %q", cfg.WebListen, ":8080")
+	}
 }
 
 func TestLoadMissingRequired(t *testing.T) {
@@ -61,6 +67,7 @@ func TestLoadInvalidValues(t *testing.T) {
 		{"invalid interval", "POLL_INTERVAL", "five minutes"},
 		{"interval too short", "POLL_INTERVAL", "1s"},
 		{"invalid bool", "MQTT_DISCOVERY_ENABLED", "maybe"},
+		{"invalid web bool", "WEB_ENABLED", "vielleicht"},
 		{"invalid log level", "LOG_LEVEL", "verbose"},
 		{"empty prefix", "MQTT_TOPIC_PREFIX", "/"},
 	}

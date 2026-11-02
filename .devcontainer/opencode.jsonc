@@ -1,0 +1,20 @@
+// Globale opencode-Konfiguration nur im Dev Container (schreibgeschützt eingebunden
+// nach ~/.config/opencode/opencode.jsonc). Gilt nicht für opencode auf dem Host.
+//
+// Erlaubt ist ohnehin alles (Standard von opencode V2). Die Policies hier sind harte
+// Verbote: Sie greifen nach Agentenregeln und "Allow always"-Freigaben und fragen
+// nie nach. Shell-Muster sind nur best effort, Umwege über Skripte erkennen sie nicht.
+// Siehe https://opencode.ai/v2/docs/policies/
+{
+  "$schema": "https://opencode.ai/config.json",
+  "policies": [
+    { "action": "tool.use", "resource": "read:*.env", "effect": "deny" },
+    { "action": "tool.use", "resource": "edit:*.env", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:*.env*", "effect": "deny" },
+    // Nicht mit der eigenen GitHub-Identität pushen.
+    { "action": "tool.use", "resource": "shell:git push *", "effect": "deny" },
+    { "action": "tool.use", "resource": "shell:git * push *", "effect": "deny" },
+    // Kein root im Container.
+    { "action": "tool.use", "resource": "shell:sudo *", "effect": "deny" }
+  ]
+}

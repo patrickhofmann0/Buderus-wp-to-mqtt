@@ -4,7 +4,8 @@ FROM mcr.microsoft.com/devcontainers/go:1.27
 # Gleiche Version wie in der CI (.github/workflows/build.yml).
 ARG GOLANGCI_LINT_VERSION=v2.15.0
 # opencode V2; zum Aktualisieren hier die Version erhöhen und Container neu bauen.
-ARG OPENCODE_VERSION=2.0.19
+# Mindestens 2.2.x: ältere Versionen ignorieren die Policies in opencode.jsonc.
+ARG OPENCODE_VERSION=2.2.5
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends make jq mosquitto-clients \

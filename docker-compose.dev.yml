@@ -19,5 +19,7 @@ services:
 #        VERSION: dev
 #    image: buderus2mqtt:dev
 #    env_file: .env
+#    ports:
+#      - "8080:8080"
 #    depends_on:
 #      - mosquitto

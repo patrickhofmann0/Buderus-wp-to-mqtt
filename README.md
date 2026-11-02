@@ -77,8 +77,23 @@ Alle Einstellungen werden über Umgebungsvariablen gesetzt.
 | `DEVICE_ID` | | aus `DEVICE_NAME` abgeleitet | Stabile ID (`[a-z0-9_]`); setzen, wenn der Name sich ändern darf |
 | `POLL_INTERVAL` | | `5m` | Abfrageintervall (Go-Duration, z. B. `30s`, `5m`, `1h`; min. `10s`) |
 | `LOG_LEVEL` | | `info` | `debug`, `info`, `warn`, `error` |
+| `WEB_ENABLED` | | `false` | Weboberfläche mit den aktuellen Werten aktivieren |
+| `WEB_LISTEN` | | `:8080` | Adresse und Port der Weboberfläche |
 
 Die TLS-Prüfung zum Gateway ist deaktiviert, da es ein selbstsigniertes Zertifikat verwendet (entspricht `curl --insecure`).
+
+## Weboberfläche
+
+Mit `WEB_ENABLED=true` liefert das Programm unter `http://<host>:8080/` ein kleines Dashboard mit den zuletzt abgefragten Werten (Kacheln, Gauges, Hell-/Dunkelmodus nach Systemeinstellung). Die Werte werden per Server-Sent Events live aktualisiert, sobald eine Abfrage abgeschlossen ist. Es gibt keine Anmeldung – nur im lokalen Netz betreiben.
+
+| Pfad | Inhalt |
+|---|---|
+| `/` | Dashboard |
+| `/api/state` | aktueller Zustand als JSON (Werte wie in den MQTT-Payloads, letzter Abfragezeitpunkt, Gateway-/MQTT-Status) |
+| `/api/events` | Server-Sent Events (`event: state`) mit demselben JSON bei jeder Aktualisierung |
+| `/healthz` | `ok` |
+
+Im Docker-Container den Port freigeben, z. B. in `docker-compose.yml` den Abschnitt `ports` einkommentieren.
 
 ## MQTT-Topics
 
@@ -223,7 +238,7 @@ Einzelnen Test ausführen: `go test ./internal/config -run TestSlugify -v`
 
 ### Dev Container (VS Code / IntelliJ)
 
-Unter `.devcontainer/` liegt ein Dev Container mit Go 1.27, golangci-lint v2.15.0 (wie CI), `make`, `mosquitto-clients` und [opencode](https://opencode.ai) 2.0.19. Zusammen mit dem Container startet der Mosquitto-Broker aus `docker-compose.dev.yml`. Das Repo wird nach `/workspaces/Buderus-wp-to-mqtt` gemountet.
+Unter `.devcontainer/` liegt ein Dev Container mit Go 1.27, golangci-lint v2.15.0 (wie CI), `make`, `mosquitto-clients` und [opencode](https://opencode.ai) 2.2.5. Zusammen mit dem Container startet der Mosquitto-Broker aus `docker-compose.dev.yml`. Das Repo wird nach `/workspaces/Buderus-wp-to-mqtt` gemountet.
 
 Voraussetzungen auf dem Host: Docker und `~/.config/opencode/cli.json` (wird beim ersten Start von opencode angelegt; die Terminal-Einstellungen werden schreibgeschützt übernommen).
 
@@ -247,6 +262,8 @@ Voraussetzungen auf dem Host: Docker und `~/.config/opencode/cli.json` (wird bei
    ```
 
 Im Container ist `MQTT_BROKER=tcp://mosquitto:1883` gesetzt. `make run` lädt jedoch `.env`; dort muss für den Container ebenfalls `MQTT_BROKER=tcp://mosquitto:1883` stehen.
+
+opencode darf im Container ohne Rückfrage arbeiten (Standard von opencode V2). `.devcontainer/opencode.jsonc` wird als globale opencode-Konfiguration nur in den Container eingebunden und verbietet hart: `.env` lesen/ändern, `git push` und `sudo`. Die Shell-Muster sind nur best effort. Das Repo selbst ist beschreibbar eingebunden, daher regelmäßig committen. Wer Pushes aus dem Container vollständig verhindern will, setzt in den VS-Code-Benutzereinstellungen `"dev.containers.gitCredentialHelperConfigLocation": "none"` und pusht vom Host.
 
 Für opencode ist das VS-Code-Terminal im Container angepasst: Terminals öffnen als Editor-Tab, Farben werden nicht nachkorrigiert, und Tastenkürzel wie `Ctrl+P` gehen im Terminal an opencode statt an VS Code (außerhalb des Terminals funktionieren sie normal). Änderungen an `devcontainer.json` wirken erst nach *Dev Containers: Rebuild Container*.
 
@@ -331,6 +348,7 @@ internal/config/             Umgebungsvariablen lesen und validieren
 internal/buderus/            REST-Client und JSON-Modelle des Gateways
 internal/mqtt/               MQTT-Verbindung (Paho) und Home-Assistant-Discovery
 internal/app/                Poller: Werte abfragen und veröffentlichen
+internal/web/                Weboberfläche: Zustandsspeicher, HTTP-Server, statische Dateien (go:embed)
 ```
 
 `internal/` ist ein Go-Mechanismus: Diese Packages können nur innerhalb dieses Moduls importiert werden.

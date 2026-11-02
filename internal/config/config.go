@@ -34,6 +34,9 @@ type Config struct {
 
 	PollInterval time.Duration
 	LogLevel     slog.Level
+
+	WebEnabled bool
+	WebListen  string
 }
 
 // Load liest die Konfiguration aus den Umgebungsvariablen des Prozesses.
@@ -56,6 +59,7 @@ func load(getenv func(string) string) (Config, error) {
 		TopicPrefix:       normalizePrefix(withDefault(getenv("MQTT_TOPIC_PREFIX"), "buderus/wp")),
 		HADiscoveryPrefix: normalizePrefix(withDefault(getenv("MQTT_HA_DISCOVERY_PREFIX"), "homeassistant")),
 		DeviceName:        withDefault(getenv("DEVICE_NAME"), "Buderus Wärmepumpe"),
+		WebListen:         withDefault(getenv("WEB_LISTEN"), ":8080"),
 	}
 
 	cfg.DeviceID = getenv("DEVICE_ID")
@@ -83,6 +87,11 @@ func load(getenv func(string) string) (Config, error) {
 	cfg.DiscoveryEnabled, err = strconv.ParseBool(withDefault(getenv("MQTT_DISCOVERY_ENABLED"), "true"))
 	if err != nil {
 		errs = append(errs, fmt.Errorf("MQTT_DISCOVERY_ENABLED: %w", err))
+	}
+
+	cfg.WebEnabled, err = strconv.ParseBool(withDefault(getenv("WEB_ENABLED"), "false"))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("WEB_ENABLED: %w", err))
 	}
 
 	cfg.PollInterval, err = time.ParseDuration(withDefault(getenv("POLL_INTERVAL"), "5m"))

@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Buderus Wärmepumpe</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='10' fill='%23f97316'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Wiederverwendbare Icons (Inline-SVG, keine externen Abrufe) -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-thermo" viewBox="0 0 24 24"><path d="M14 14.8V5a2 2 0 1 0-4 0v9.8a4 4 0 1 0 4 0Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17.5" r="1.8" fill="currentColor"/></symbol>
+    <symbol id="i-outdoor" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></g></symbol>
+    <symbol id="i-supply" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3c3 4 6 7 6 11a6 6 0 0 1-12 0c0-4 3-7 6-11Z"/><path d="M12 18a3 3 0 0 1-3-3"/></g></symbol>
+    <symbol id="i-fan" viewBox="0 0 24 24"><g fill="currentColor"><path d="M12 11c0-4 1-8 4-8 2.5 0 3 3 1 5-1.3 1.3-3 2.3-5 3Z"/><path d="M13 12c4 0 8 1 8 4 0 2.5-3 3-5 1-1.3-1.3-2.3-3-3-5Z"/><path d="M12 13c0 4-1 8-4 8-2.5 0-3-3-1-5 1.3-1.3 3-2.3 5-3Z"/><path d="M11 12c-4 0-8-1-8-4 0-2.5 3-3 5-1 1.3 1.3 2.3 3 3 5Z"/><circle cx="12" cy="12" r="1.6"/></g></symbol>
+    <symbol id="i-water" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4h10M9 4v4M15 4v4"/><rect x="5" y="8" width="14" height="13" rx="3"/><path d="M5 14c2.3 1.3 4.7 1.3 7 0s4.7-1.3 7 0"/></g></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/></g></symbol>
+    <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0 5 5L21 13l-8 8-3-3 6.7-6.7M14.7 6.3 13 4.6a4 4 0 0 0-5 5L3 14.6 6.4 18l5-5a4 4 0 0 0 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-flame" viewBox="0 0 24 24"><path d="M12 22a7 7 0 0 0 7-7c0-4-3-6-4-10-2 2-3 4-3 6-1-1-2-2-2-4-3 3-5 5-5 8a7 7 0 0 0 7 7Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-valve" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 8v8l9-4-9-4ZM21 8v8l-9-4 9-4Z"/><path d="M12 12V5M9 5h6" stroke-linecap="round"/></g></symbol>
+  </svg>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="live" id="live" title="Live-Verbindung"></span>
+      <h1>Wärmepumpe</h1>
+    </div>
+    <div class="status">
+      <span class="chip" id="chip-gateway">Gateway</span>
+      <span class="chip" id="chip-mqtt">MQTT</span>
+      <span class="chip muted" id="last-poll">Warte auf Daten …</span>
+    </div>
+  </header>
+
+  <div class="banner hidden" id="stale">Die Werte sind veraltet. Die letzte erfolgreiche Abfrage liegt länger zurück als erwartet.</div>
+
+  <main>
+    <section class="hero">
+      <article class="hero-card" data-show="temperatures.outdoor">
+        <svg class="icon"><use href="#i-outdoor"/></svg>
+        <div class="label">Außentemperatur</div>
+        <div class="big"><span data-temp="outdoor" data-field="temperatures.outdoor" data-fmt="temp">–</span><small>°C</small></div>
+      </article>
+      <article class="hero-card" data-show="temperatures.supply">
+        <svg class="icon"><use href="#i-supply"/></svg>
+        <div class="label">Vorlauf</div>
+        <div class="big"><span data-temp="water" data-field="temperatures.supply" data-fmt="temp">–</span><small>°C</small></div>
+      </article>
+      <article class="hero-card" data-show="power.compressorPower">
+        <svg class="icon fan" id="fan"><use href="#i-fan"/></svg>
+        <div class="label">Verdichterleistung</div>
+        <div class="big"><span data-field="power.compressorPower" data-fmt="int">–</span><small>W</small></div>
+      </article>
+    </section>
+
+    <section class="grid" id="grid">
+      <article class="card wide" data-show="temperatures.supply temperatures.return">
+        <h2><svg class="icon"><use href="#i-thermo"/></svg>Vorlauf &amp; Rücklauf</h2>
+        <div class="flow">
+          <div class="gauge" data-gauge="temperatures.supply" data-min="0" data-max="80">
+            <svg viewBox="0 0 120 100"><path class="track" d="M20 85 A50 50 0 1 1 100 85" pathLength="100"/><path class="value" d="M20 85 A50 50 0 1 1 100 85" pathLength="100"/></svg>
+            <div class="gauge-text"><span data-temp="water" data-field="temperatures.supply" data-fmt="temp">–</span><small>°C</small></div>
+            <div class="gauge-label">Vorlauf</div>
+          </div>
+          <svg class="pipe" id="pipe" viewBox="0 0 200 60" preserveAspectRatio="none" aria-hidden="true">
+            <path class="pipe-track" d="M0 18 H200 M200 42 H0"/>
+            <path class="pipe-flow supply" d="M0 18 H200"/>
+            <path class="pipe-flow return" d="M200 42 H0"/>
+          </svg>
+          <div class="gauge" data-gauge="temperatures.return" data-min="0" data-max="80">
+            <svg viewBox="0 0 120 100"><path class="track" d="M20 85 A50 50 0 1 1 100 85" pathLength="100"/><path class="value" d="M20 85 A50 50 0 1 1 100 85" pathLength="100"/></svg>
+            <div class="gauge-text"><span data-temp="water" data-field="temperatures.return" data-fmt="temp">–</span><small>°C</small></div>
+            <div class="gauge-label">Rücklauf</div>
+          </div>
+        </div>
+        <div class="row" data-show="temperatures.supply temperatures.return" data-needs-both="1"><span>Spreizung</span><b><span id="spread">–</span> K</b></div>
+      </article>
+
+      <article class="card" data-show="power.modulation power.compressorPower">
+        <h2><svg class="icon"><use href="#i-bolt"/></svg>Leistung</h2>
+        <div class="ring" data-ring="power.modulation" data-show="power.modulation">
+          <svg viewBox="0 0 100 100"><circle class="track" cx="50" cy="50" r="42" pathLength="100"/><circle class="value" cx="50" cy="50" r="42" pathLength="100"/></svg>
+          <div class="ring-text"><span data-field="power.modulation" data-fmt="int">–</span><small>%</small></div>
+          <div class="gauge-label">Modulation</div>
+        </div>
+        <div class="row" data-show="power.compressorPower"><span>Verdichter</span><b><span data-field="power.compressorPower" data-fmt="int">–</span> W</b></div>
+      </article>
+
+      <article class="card" data-show="temperatures.dhwActual temperatures.dhwSetpoint">
+        <h2><svg class="icon"><use href="#i-water"/></svg>Warmwasser</h2>
+        <div class="big" data-show="temperatures.dhwActual"><span data-temp="water" data-field="temperatures.dhwActual" data-fmt="temp">–</span><small>°C</small></div>
+        <div class="bar" data-bar="temperatures.dhwActual" data-target="temperatures.dhwSetpoint" data-max="70">
+          <div class="bar-fill"></div><div class="bar-target"></div>
+        </div>
+        <div class="row" data-show="temperatures.dhwSetpoint"><span>Soll</span><b><span data-field="temperatures.dhwSetpoint" data-fmt="temp">–</span> °C</b></div>
+      </article>
+
+      <!-- Heizkreise werden per JavaScript aus der Vorlage erzeugt -->
+      <template id="hc-template">
+        <article class="card hc">
+          <h2><svg class="icon"><use href="#i-home"/></svg><span class="hc-title"></span><span class="badge" data-mode></span></h2>
+          <div class="ring" data-ring="HC.mixerPosition" data-show="HC.mixerPosition">
+            <svg viewBox="0 0 100 100"><circle class="track" cx="50" cy="50" r="42" pathLength="100"/><circle class="value" cx="50" cy="50" r="42" pathLength="100"/></svg>
+            <div class="ring-text"><span data-field="HC.mixerPosition" data-fmt="int">–</span><small>%</small></div>
+            <div class="gauge-label">Mischer</div>
+          </div>
+          <div class="row" data-show="HC.roomSetpoint"><span>Raumsollwert</span><b><span data-temp="room" data-field="HC.roomSetpoint" data-fmt="temp">–</span> °C</b></div>
+        </article>
+      </template>
+
+      <article class="card" data-show="heating">
+        <h2><svg class="icon"><use href="#i-flame"/></svg>Energie Heizung</h2>
+        <div class="row" data-show="heating.electricity"><span>Strom gesamt</span><b><span data-field="heating.electricity" data-fmt="dec">–</span> kWh</b></div>
+        <div class="row" data-show="heating.compressor"><span>Strom Verdichter</span><b><span data-field="heating.compressor" data-fmt="dec">–</span> kWh</b></div>
+        <div class="row" data-show="heating.eheater"><span>Strom Zuheizer</span><b><span data-field="heating.eheater" data-fmt="dec">–</span> kWh</b></div>
+        <div class="row" data-show="heating.burner"><span>Brenner</span><b><span data-field="heating.burner" data-fmt="dec">–</span> kWh</b></div>
+        <div class="row" data-show="heating.outputProduced"><span>Erzeugte Wärme</span><b><span data-field="heating.outputProduced" data-fmt="dec">–</span> kWh</b></div>
+      </article>
+
+      <article class="card" data-show="dhw">
+        <h2><svg class="icon"><use href="#i-water"/></svg>Energie Warmwasser</h2>
+        <div class="row" data-show="dhw.electricity"><span>Strom gesamt</span><b><span data-field="dhw.electricity" data-fmt="dec">–</span> kWh</b></div>
+        <div class="row" data-show="dhw.compressor"><span>Strom Verdichter</span><b><span data-field="dhw.compressor" data-fmt="dec">–</span> kWh</b></div>
+        <div class="row" data-show="dhw.eheater"><span>Strom Zuheizer</span><b><span data-field="dhw.eheater" data-fmt="dec">–</span> kWh</b></div>
+        <div class="row" data-show="dhw.burner"><span>Brenner</span><b><span data-field="dhw.burner" data-fmt="dec">–</span> kWh</b></div>
+        <div class="row" data-show="dhw.outputProduced"><span>Erzeugte Wärme</span><b><span data-field="dhw.outputProduced" data-fmt="dec">–</span> kWh</b></div>
+      </article>
+
+      <article class="card" data-show="maintenance">
+        <h2><svg class="icon"><use href="#i-wrench"/></svg>Wartung</h2>
+        <div class="row" data-show="maintenance.startsTotal"><span>Verdichterstarts</span><b data-field="maintenance.startsTotal" data-fmt="int">–</b></div>
+        <div class="row sub" data-show="maintenance.startsHeating"><span>Heizung</span><b data-field="maintenance.startsHeating" data-fmt="int">–</b></div>
+        <div class="row sub" data-show="maintenance.startsDhw"><span>Warmwasser</span><b data-field="maintenance.startsDhw" data-fmt="int">–</b></div>
+        <div class="row sub" data-show="maintenance.startsCooling"><span>Kühlen</span><b data-field="maintenance.startsCooling" data-fmt="int">–</b></div>
+        <div class="row" data-show="maintenance.workingTimeTotal"><span>Betriebszeit</span><b><span data-field="maintenance.workingTimeTotal" data-fmt="hours">–</span> h</b></div>
+        <div class="row sub" data-show="maintenance.workingTimeHeating"><span>Heizung</span><b><span data-field="maintenance.workingTimeHeating" data-fmt="hours">–</span> h</b></div>
+        <div class="row sub" data-show="maintenance.workingTimeDhw"><span>Warmwasser</span><b><span data-field="maintenance.workingTimeDhw" data-fmt="hours">–</span> h</b></div>
+        <div class="row sub" data-show="maintenance.workingTimeCooling"><span>Kühlen</span><b><span data-field="maintenance.workingTimeCooling" data-fmt="hours">–</span> h</b></div>
+      </article>
+    </section>
+  </main>
+
+  <footer><span id="version"></span></footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

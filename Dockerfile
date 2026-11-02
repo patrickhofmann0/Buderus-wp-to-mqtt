@@ -24,4 +24,6 @@ FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/buderus2mqtt /buderus2mqtt
 
 USER nonroot:nonroot
+# Weboberfläche (nur aktiv mit WEB_ENABLED=true)
+EXPOSE 8080
 ENTRYPOINT ["/buderus2mqtt"]

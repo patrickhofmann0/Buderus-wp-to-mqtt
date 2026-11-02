@@ -135,6 +135,34 @@ type Poller struct {
 	circuits        []Circuit
 	heatingCircuits []HeatingCircuit
 	logger          *slog.Logger
+	recorder        StateRecorder
+}
+
+// StateRecorder merkt sich die veröffentlichten Werte, z. B. für die Weboberfläche.
+// Der Poller ruft es zusätzlich zum Publisher auf; ohne Recorder entfällt das.
+type StateRecorder interface {
+	// Record wird für jedes Payload aufgerufen; publishErr ist der Fehler beim MQTT-Versand (oder nil).
+	Record(key string, payload []byte, publishErr error)
+	// PollCompleted wird nach jedem vollständigen Abfragedurchlauf aufgerufen.
+	PollCompleted(at time.Time)
+}
+
+// SetRecorder setzt einen optionalen StateRecorder (≈ Setter Injection).
+func (p *Poller) SetRecorder(recorder StateRecorder) {
+	p.recorder = recorder
+}
+
+// publish versendet ein Payload per MQTT und meldet es an den Recorder.
+func (p *Poller) publish(ctx context.Context, key, topic string, payload []byte) error {
+	err := p.publisher.Publish(ctx, topic, payload, true)
+	if p.recorder != nil {
+		p.recorder.Record(key, payload, err)
+	}
+	if err != nil {
+		return err
+	}
+	p.logger.Debug("published", "topic", topic, "payload", string(payload))
+	return nil
 }
 
 // NewPoller erzeugt einen Poller. Abhängigkeiten werden übergeben (≈ Constructor Injection).
@@ -208,6 +236,9 @@ func (p *Poller) PollOnce(ctx context.Context) {
 			p.logger.Error("poll failed", "heatingCircuit", circuit.Key, "error", err)
 		}
 	}
+	if p.recorder != nil {
+		p.recorder.PollCompleted(time.Now())
+	}
 }
 
 func translateSummerWinterMode(mode string) (string, bool) {
@@ -268,12 +299,7 @@ func (p *Poller) pollHeatingCircuit(ctx context.Context, circuit HeatingCircuit)
 		return fmt.Errorf("marshal heating circuit state: %w", err)
 	}
 
-	topic := StateTopic(p.topicPrefix, Circuit{Key: circuit.Key})
-	if err := p.publisher.Publish(ctx, topic, payload, true); err != nil {
-		return err
-	}
-	p.logger.Debug("published", "topic", topic, "payload", string(payload))
-	return nil
+	return p.publish(ctx, circuit.Key, StateTopic(p.topicPrefix, Circuit{Key: circuit.Key}), payload)
 }
 
 func (p *Poller) pollPower(ctx context.Context) error {
@@ -302,12 +328,7 @@ func (p *Poller) pollPower(ctx context.Context) error {
 		return fmt.Errorf("marshal power state: %w", err)
 	}
 
-	topic := PowerTopic(p.topicPrefix)
-	if err := p.publisher.Publish(ctx, topic, payload, true); err != nil {
-		return err
-	}
-	p.logger.Debug("published", "topic", topic, "payload", string(payload))
-	return nil
+	return p.publish(ctx, "power", PowerTopic(p.topicPrefix), payload)
 }
 
 const (
@@ -352,12 +373,7 @@ func (p *Poller) pollTemperatures(ctx context.Context) error {
 		return fmt.Errorf("marshal temperature state: %w", err)
 	}
 
-	topic := TemperaturesTopic(p.topicPrefix)
-	if err := p.publisher.Publish(ctx, topic, payload, true); err != nil {
-		return err
-	}
-	p.logger.Debug("published", "topic", topic, "payload", string(payload))
-	return nil
+	return p.publish(ctx, "temperatures", TemperaturesTopic(p.topicPrefix), payload)
 }
 
 func (p *Poller) pollMaintenance(ctx context.Context) error {
@@ -395,12 +411,7 @@ func (p *Poller) pollMaintenance(ctx context.Context) error {
 		return fmt.Errorf("marshal maintenance state: %w", err)
 	}
 
-	topic := MaintenanceTopic(p.topicPrefix)
-	if err := p.publisher.Publish(ctx, topic, payload, true); err != nil {
-		return err
-	}
-	p.logger.Debug("published", "topic", topic, "payload", string(payload))
-	return nil
+	return p.publish(ctx, "maintenance", MaintenanceTopic(p.topicPrefix), payload)
 }
 
 func (p *Poller) pollCircuit(ctx context.Context, c Circuit) error {
@@ -421,12 +432,7 @@ func (p *Poller) pollCircuit(ctx context.Context, c Circuit) error {
 		return fmt.Errorf("marshal state: %w", err)
 	}
 
-	topic := StateTopic(p.topicPrefix, c)
-	if err := p.publisher.Publish(ctx, topic, payload, true); err != nil {
-		return err
-	}
-	p.logger.Debug("published", "topic", topic, "payload", string(payload))
-	return nil
+	return p.publish(ctx, c.Key, StateTopic(p.topicPrefix, c), payload)
 }
 
 // Sensors liefert die Sensor-Definitionen für die Home-Assistant-Discovery.

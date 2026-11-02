@@ -14,6 +14,7 @@ import (
 	"github.com/patrickhofmann0/Buderus-wp-to-mqtt/internal/buderus"
 	"github.com/patrickhofmann0/Buderus-wp-to-mqtt/internal/config"
 	"github.com/patrickhofmann0/Buderus-wp-to-mqtt/internal/mqtt"
+	"github.com/patrickhofmann0/Buderus-wp-to-mqtt/internal/web"
 )
 
 // version wird beim Build per -ldflags "-X main.version=..." gesetzt
@@ -68,10 +69,40 @@ func run() error {
 
 	poller := app.NewPoller(buderusClient, mqttClient, cfg.TopicPrefix, app.DefaultCircuits, heatingCircuits, logger)
 
-	logger.Info("started", "version", version, "gateway", cfg.BuderusHost, "interval", cfg.PollInterval, "topicPrefix", cfg.TopicPrefix)
-	poller.Run(ctx, cfg.PollInterval)
+	// pollCtx endet bei Programmende oder wenn der Webserver ausfällt (z. B. Port belegt).
+	pollCtx, cancelPoll := context.WithCancel(ctx)
+	defer cancelPoll()
+
+	// Der Webserver läuft parallel als Goroutine; webErr liefert sein Ergebnis.
+	webErr := make(chan error, 1)
+	if cfg.WebEnabled {
+		store := web.NewStore(version, cfg.PollInterval, webHeatingCircuits(heatingCircuits))
+		poller.SetRecorder(store)
+		go func() {
+			err := web.Serve(ctx, cfg.WebListen, web.NewHandler(store, logger), logger)
+			if err != nil {
+				cancelPoll()
+			}
+			webErr <- err
+		}()
+	} else {
+		webErr <- nil
+	}
+
+	logger.Info("started", "version", version, "gateway", cfg.BuderusHost, "interval", cfg.PollInterval, "topicPrefix", cfg.TopicPrefix, "web", cfg.WebEnabled)
+	poller.Run(pollCtx, cfg.PollInterval)
+	// Auf das geordnete Herunterfahren des Webservers warten.
+	err = <-webErr
 	logger.Info("stopped")
-	return nil
+	return err
+}
+
+func webHeatingCircuits(circuits []app.HeatingCircuit) []web.HeatingCircuit {
+	result := make([]web.HeatingCircuit, 0, len(circuits))
+	for _, c := range circuits {
+		result = append(result, web.HeatingCircuit{Key: c.Key, Label: c.Label, HasMixer: c.HasMixer})
+	}
+	return result
 }
 
 func publishDiscovery(ctx context.Context, cfg config.Config, availabilityTopic string, client *mqtt.Client, heatingCircuits []app.HeatingCircuit) error {

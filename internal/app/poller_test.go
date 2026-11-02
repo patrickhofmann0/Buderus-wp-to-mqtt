@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/patrickhofmann0/Buderus-wp-to-mqtt/internal/buderus"
 	"github.com/patrickhofmann0/Buderus-wp-to-mqtt/internal/mqtt"
@@ -679,5 +680,50 @@ func TestSensors(t *testing.T) {
 	}
 	if !foundHeatingCircuitDevice {
 		t.Error("heating circuit sensor should use its sub-device and a short name")
+	}
+}
+
+// fakeRecorder merkt sich die an den StateRecorder gemeldeten Payloads.
+type fakeRecorder struct {
+	records   map[string]string
+	errs      map[string]error
+	completed int
+}
+
+func (f *fakeRecorder) Record(key string, payload []byte, publishErr error) {
+	f.records[key] = string(payload)
+	f.errs[key] = publishErr
+}
+
+func (f *fakeRecorder) PollCompleted(time.Time) {
+	f.completed++
+}
+
+// failingPublisher simuliert einen nicht erreichbaren Broker.
+type failingPublisher struct{}
+
+func (failingPublisher) Publish(context.Context, string, []byte, bool) error {
+	return errors.New("broker down")
+}
+
+func TestPollOnceRecordsStateEvenIfPublishFails(t *testing.T) {
+	fetcher := &fakeFetcher{
+		values: map[string]buderus.ValueResponse{
+			buderus.PathCompressorPower: {Value: ptr(460), UnitOfMeasure: "W"},
+		},
+	}
+	recorder := &fakeRecorder{records: map[string]string{}, errs: map[string]error{}}
+	poller := NewPoller(fetcher, failingPublisher{}, "buderus/wp", nil, nil, discardLogger())
+	poller.SetRecorder(recorder)
+	poller.PollOnce(context.Background())
+
+	if got := recorder.records["power"]; got != `{"compressorPower":460}` {
+		t.Errorf("recorded power = %s, want compressor power", got)
+	}
+	if recorder.errs["power"] == nil {
+		t.Error("publish error should be passed to recorder")
+	}
+	if recorder.completed != 1 {
+		t.Errorf("PollCompleted calls = %d, want 1", recorder.completed)
 	}
 }
