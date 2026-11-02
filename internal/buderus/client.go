@@ -30,6 +30,9 @@ const (
 	PathOutdoorTemperature = "/system/sensors/temperatures/outdoor_t1"
 	PathSupplyTemperature  = "/heatSources/actualSupplyTemperature"
 	PathReturnTemperature  = "/heatSources/returnTemperature"
+	// Volumenströme: Heizung in l/h (Sonderwert lowflow), Warmwasser in l/min.
+	PathHeatingVolumeFlow = "/heatSources/hs1/pumpVolumeFlow"
+	PathDHWVolumeFlow     = "/dhwCircuits/dhw1/volumeFlow"
 )
 
 // maxBodySize begrenzt die gelesene Antwortgröße (1 MiB).

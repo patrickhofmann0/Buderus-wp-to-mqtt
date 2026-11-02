@@ -21,6 +21,7 @@
     <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0 5 5L21 13l-8 8-3-3 6.7-6.7M14.7 6.3 13 4.6a4 4 0 0 0-5 5L3 14.6 6.4 18l5-5a4 4 0 0 0 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
     <symbol id="i-flame" viewBox="0 0 24 24"><path d="M12 22a7 7 0 0 0 7-7c0-4-3-6-4-10-2 2-3 4-3 6-1-1-2-2-2-4-3 3-5 5-5 8a7 7 0 0 0 7 7Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
     <symbol id="i-valve" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 8v8l9-4-9-4ZM21 8v8l-9-4 9-4Z"/><path d="M12 12V5M9 5h6" stroke-linecap="round"/></g></symbol>
+    <symbol id="i-flow" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h14M14 5l3 3-3 3"/><path d="M21 16H7M10 13l-3 3 3 3"/></g></symbol>
   </svg>
 
   <header class="topbar">
@@ -96,6 +97,12 @@
           <div class="bar-fill"></div><div class="bar-target"></div>
         </div>
         <div class="row" data-show="temperatures.dhwSetpoint"><span>Soll</span><b><span data-field="temperatures.dhwSetpoint" data-fmt="temp">–</span> °C</b></div>
+      </article>
+
+      <article class="card" data-show="flow.heating flow.dhw">
+        <h2><svg class="icon"><use href="#i-flow"/></svg>Volumenstrom</h2>
+        <div class="row" data-show="flow.heating"><span>Heizung</span><b><span data-field="flow.heating" data-fmt="dec">–</span> l/min</b></div>
+        <div class="row" data-show="flow.dhw"><span>Warmwasser</span><b><span data-field="flow.dhw" data-fmt="dec">–</span> l/min</b></div>
       </article>
 
       <!-- Heizkreise werden per JavaScript aus der Vorlage erzeugt -->

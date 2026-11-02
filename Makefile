@@ -3,7 +3,7 @@ IMAGE   := buderus2mqtt:dev
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: all build run test lint fmt tidy docker clean
+.PHONY: all build run test lint fmt tidy docker clean agent
 
 all: fmt lint test build
 
@@ -31,3 +31,8 @@ docker:
 
 clean:
 	rm -rf bin
+
+# Startet den Agent-Orchestrator interaktiv in opencode: make agent TASK="..."
+agent:
+	@test -n "$(TASK)" || { echo 'Aufruf: make agent TASK="Auftrag"'; exit 1; }
+	opencode --prompt '/entwickeln $(subst ','\'',$(TASK))'

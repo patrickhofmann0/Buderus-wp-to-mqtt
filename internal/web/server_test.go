@@ -122,6 +122,61 @@ func TestHandlerStateAndStatic(t *testing.T) {
 	}
 }
 
+func TestHandlerStateIncludesFlow(t *testing.T) {
+	store := NewStore("dev", time.Minute, nil)
+	store.Record("flow", []byte(`{"heating":18.9,"dhw":12}`), nil)
+	store.PollCompleted(time.Now())
+	srv := httptest.NewServer(NewHandler(store, discardLogger()))
+	defer srv.Close()
+
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/api/state", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	s := decodeSnapshot(t, body)
+	if got := string(s.Values["flow"]); got != `{"heating":18.9,"dhw":12}` {
+		t.Errorf("values.flow = %s", got)
+	}
+}
+
+func TestIndexContainsVolumeFlowTile(t *testing.T) {
+	srv := httptest.NewServer(NewHandler(NewStore("dev", time.Minute, nil), discardLogger()))
+	defer srv.Close()
+
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(resp.Body)
+	body := string(raw)
+
+	for _, want := range []string{
+		"Volumenstrom",
+		`data-show="flow.heating flow.dhw"`,
+		`data-field="flow.heating"`,
+		`data-field="flow.dhw"`,
+		`id="i-flow"`,
+		`href="#i-flow"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("index.html does not contain %q", want)
+		}
+	}
+
+	// Die Kachel steht nach der Warmwasser-Kachel und vor der Heizkreis-Vorlage.
+	dhw := strings.Index(body, "Warmwasser</h2>")
+	tile := strings.Index(body, `data-show="flow.heating flow.dhw"`)
+	template := strings.Index(body, `id="hc-template"`)
+	if dhw < 0 || tile < 0 || template < 0 || dhw >= tile || tile >= template {
+		t.Errorf("tile order wrong: warmwasser=%d tile=%d template=%d", dhw, tile, template)
+	}
+}
+
 func TestEventsSendsInitialAndUpdates(t *testing.T) {
 	store := NewStore("dev", time.Minute, nil)
 	srv := httptest.NewServer(NewHandler(store, discardLogger()))
