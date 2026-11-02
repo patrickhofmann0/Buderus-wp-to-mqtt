@@ -269,6 +269,30 @@ Für opencode ist das VS-Code-Terminal im Container angepasst: Terminals öffnen
 
 Für ein Update von opencode `OPENCODE_VERSION` in `.devcontainer/Dockerfile` erhöhen und den Container neu bauen (*Dev Containers: Rebuild Container*). Ein Neubau ohne Cache, etwa für aktuelle Basis-Images, geht nur auf dem Host: `docker build --no-cache -t buderus2mqtt-devcontainer .devcontainer`.
 
+### Agent-Orchestrator (opencode)
+
+Unter `.opencode/` liegt ein Entwicklungsablauf mit getrennten Agenten:
+
+| Agent | Aufgabe | Rechte | Modell (GitHub Copilot) |
+|---|---|---|---|
+| `orchestrator` | steuert den Ablauf, führt Prüfungen aus, committet | nur lesen, Subagenten, Prüf- und Git-Befehle (kein Push) | `claude-haiku-5.5#high` |
+| `specifier` | prüft den Auftrag, erstellt Akzeptanzkriterien oder Rückfragen | nur lesen | `claude-sonnet-5.5#medium` |
+| `planner` | erstellt den Umsetzungsplan | nur lesen | `claude-opus-5.5#medium` |
+| `coder` | setzt den Plan um, behebt Befunde | schreiben (nicht `.env`, `buderus.yml`, `.github/`, `.opencode/`, `.devcontainer/`) | `claude-sonnet-5.5#medium` |
+| `reviewer` | prüft den Diff unabhängig | nur lesen | `gpt-6.1-sol#high` |
+
+Teure Modelle nur dort, wo wenige Aufrufe viel bewirken (Plan, Review); der Reviewer stammt bewusst aus einer anderen Modellfamilie als der Coder. Modelle ändern: Zeile `model:` in `.opencode/agents/<agent>.md`.
+
+Ablauf: Spezifikation (mit Rückfragen) → Plan → **Freigabe durch dich** → Branch `agent/<slug>` → Coder, Prüfungen (`golangci-lint fmt`, `golangci-lint run`, `go test -race ./...`, `go build ./...`) und Reviewer im Wechsel, höchstens drei Runden → Commit ohne Push. Ist nach drei Runden noch ein `blocker` oder `major` offen, stoppt der Ablauf ohne Commit.
+
+Start:
+
+```sh
+make agent TASK="Außentemperatur auch als gerundeten Wert veröffentlichen"
+```
+
+Alternativ in opencode `/entwickeln <Auftrag>` eingeben oder den Agenten `orchestrator` wählen. Die Rechte sind in den Agentendateien technisch festgelegt; die Policies aus `.devcontainer/opencode.jsonc` gelten zusätzlich. Die Ablaufsteuerung selbst (Freigabe, Rundenlimit) übernimmt das Modell nach Anweisung – das Ergebnis daher vor dem Push prüfen.
+
 ### Ohne lokale Go-Installation
 
 Das Docker-Image führt beim Bauen die Tests aus. Für Tests ohne Image:
