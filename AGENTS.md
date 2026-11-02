@@ -20,7 +20,7 @@ Go service (`cmd/buderus2mqtt`) that polls a Buderus heat pump gateway's local R
 - Home-Assistant-Untergeräte verwenden MQTT-Discovery `via_device` und stabile IDs, abgeleitet von der `DEVICE_ID` des Hauptgeräts. Beim Verschieben von Sensoren Discovery-Topics, `unique_id` und `default_entity_id` weiterhin von der Hauptgeräte-ID ableiten, damit Entitäten und Statistiken erhalten bleiben. Gerätenamen nicht zusätzlich in Sensor-Namen wiederholen.
 - `buderus.yml` is the vendor OpenAPI spec (Apache-2.0, see `NOTICE`); use it as API reference, don't edit it. `scripts/probe-*.sh` query a real gateway using `.env` to check what a device supports.
 - `docs/plan-erweiterung.md` is a future plan (e.g. `app/definitions.go`, group pollers) — not the current state.
-- `.opencode/agents/` + `.opencode/commands/entwickeln.md` define the dev workflow (orchestrator → specifier, planner, coder ⇄ reviewer, max. 3 rounds); start with `make agent TASK="..."`. Keep agent permissions and the README section in sync when changing them.
+- `.opencode/agents/` + `.opencode/commands/entwickeln.md` define the dev workflow (orchestrator → specifier, planner, coder ⇄ reviewer, max. 3 rounds); start with `make agent TASK="..."`. Keep agent permissions and the README section in sync when changing them. Status and next stages (GitHub Actions): `docs/plan-agent-orchestrator.md`.
 
 ## Conventions
 - Code comments, docs, README, and commit messages are in **German**. Commit messages are short and lowercase (e.g. `außentemperatur`).
