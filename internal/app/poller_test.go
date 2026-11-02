@@ -1,12 +1,14 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,6 +97,7 @@ func TestPollOnce(t *testing.T) {
 		},
 		values: map[string]buderus.ValueResponse{
 			buderus.PathCompressorPower:                              {Value: ptr(460), Unit: "W"},
+			buderus.PathSystemPressure:                               {Value: ptr(1.7), UnitOfMeasure: "bar", State: []map[string]float64{{"invalid": 255}}},
 			buderus.PathModulation:                                   {Value: ptr(13), Unit: "%"},
 			buderus.PathOutdoorTemperature:                           {Value: ptr(7.5), UnitOfMeasure: "C", State: []map[string]float64{{"open": -32768}, {"short": 32767}}},
 			buderus.PathSupplyTemperature:                            {Value: ptr(30.6), UnitOfMeasure: "C", State: []map[string]float64{{"open": -32768}, {"short": 32767}}},
@@ -133,6 +136,9 @@ func TestPollOnce(t *testing.T) {
 	}
 	if !publisher.retained["buderus/wp/power"] {
 		t.Error("power state should be retained")
+	}
+	if got := publisher.published["buderus/wp/pressure"]; got != `{"system":1.7}` {
+		t.Errorf("pressure payload = %s, want system pressure", got)
 	}
 	if got := publisher.published["buderus/wp/temperatures"]; got != `{"outdoor":7.5,"supply":30.6,"return":30,"dhwActual":43,"dhwSetpoint":48}` {
 		t.Errorf("temperature payload = %s, want all valid temperatures", got)
@@ -480,8 +486,8 @@ func TestTranslateSummerWinterMode(t *testing.T) {
 func TestSensors(t *testing.T) {
 	heatingCircuits := []HeatingCircuit{{Key: "hc1", Label: "Heizkreis 1"}, {Key: "hc2", Label: "Heizkreis 2", HasMixer: true}}
 	sensors := Sensors("buderus/wp", DefaultCircuits, heatingCircuits, VolumeFlows{})
-	if len(sensors) != 26 {
-		t.Fatalf("got %d sensors, want 26", len(sensors))
+	if len(sensors) != 27 {
+		t.Fatalf("got %d sensors, want 27", len(sensors))
 	}
 	seenSubDevice := false
 	for _, sensor := range sensors {
@@ -502,6 +508,7 @@ func TestSensors(t *testing.T) {
 		"compressor_power",
 		"modulation",
 		"outdoor_temperature",
+		"system_pressure",
 		"supply_temperature",
 		"return_temperature",
 		"dhw_temperature",
@@ -584,6 +591,13 @@ func TestSensors(t *testing.T) {
 		}
 		if s.Key == "outdoor_temperature" || s.Key == "compressor_power" {
 			foundMainDevices[s.Key] = s.SubDevice == nil
+		}
+		if s.Key == "system_pressure" {
+			foundMainDevices[s.Key] = s.SubDevice == nil
+			if s.Name != "Systemdruck" || s.StateTopic != "buderus/wp/pressure" || s.JSONField != "system" || s.Unit != "bar" ||
+				s.DeviceClass != "pressure" || s.StateClass != "measurement" || s.Icon != "mdi:gauge" {
+				t.Errorf("unexpected system pressure sensor: %+v", s)
+			}
 		}
 		if s.Key == "hc1_summer_winter_mode" {
 			foundHeatingCircuitDevice = s.Name == "Sommer/Winter" && s.SubDevice != nil && s.SubDevice.Key == "hc1" && s.SubDevice.Name == "Heizkreis 1"
@@ -675,7 +689,7 @@ func TestSensors(t *testing.T) {
 	if !foundDHWDevice {
 		t.Error("DHW temperature should use the Warmwasser sub-device and a short name")
 	}
-	for _, key := range []string{"outdoor_temperature", "compressor_power"} {
+	for _, key := range []string{"outdoor_temperature", "compressor_power", "system_pressure"} {
 		if !foundMainDevices[key] {
 			t.Errorf("%s should remain on the main device", key)
 		}
@@ -1110,6 +1124,215 @@ func TestSensorsVolumeFlowDiscovery(t *testing.T) {
 		}
 		if len(payload.Device.Identifiers) != 1 || payload.Device.Identifiers[0] != "wp_heating" ||
 			payload.Device.Name != "Heizung" || payload.Device.ViaDevice != "wp" {
+			t.Errorf("unexpected discovery device: %+v", payload.Device)
+		}
+		return
+	}
+	t.Errorf("discovery message %q not found", wantTopic)
+}
+
+// newPressurePoller baut einen Poller ohne Heizkreise und Circuits mit frischem Fake-Publisher.
+func newPressurePoller(fetcher *fakeFetcher) (*Poller, *fakePublisher) {
+	publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
+	return NewPoller(fetcher, publisher, "buderus/wp", nil, nil, discardLogger()), publisher
+}
+
+func pressureFetcher(resp buderus.ValueResponse) *fakeFetcher {
+	return &fakeFetcher{values: map[string]buderus.ValueResponse{buderus.PathSystemPressure: resp}}
+}
+
+func TestPollPressurePublishesValue(t *testing.T) {
+	poller, publisher := newPressurePoller(pressureFetcher(buderus.ValueResponse{Value: ptr(1.7), UnitOfMeasure: "bar"}))
+	if err := poller.pollPressure(context.Background()); err != nil {
+		t.Fatalf("pollPressure() error = %v", err)
+	}
+	if got := publisher.published["buderus/wp/pressure"]; got != `{"system":1.7}` {
+		t.Errorf("pressure payload = %s", got)
+	}
+	if !publisher.retained["buderus/wp/pressure"] {
+		t.Error("pressure state should be retained")
+	}
+}
+
+func TestPollPressureUnitAccepted(t *testing.T) {
+	for name, resp := range map[string]buderus.ValueResponse{
+		"BAR":           {Value: ptr(1.7), UnitOfMeasure: "BAR"},
+		"unit-Fallback": {Value: ptr(1.7), Unit: "bar"},
+		"beide leer":    {Value: ptr(1.7)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			poller, publisher := newPressurePoller(pressureFetcher(resp))
+			if err := poller.pollPressure(context.Background()); err != nil {
+				t.Fatalf("pollPressure() error = %v", err)
+			}
+			if got := publisher.published["buderus/wp/pressure"]; got != `{"system":1.7}` {
+				t.Errorf("pressure payload = %q", got)
+			}
+		})
+	}
+}
+
+func TestPollPressureUnexpectedUnitOmitted(t *testing.T) {
+	poller, publisher := newPressurePoller(pressureFetcher(buderus.ValueResponse{Value: ptr(1.7), UnitOfMeasure: "kPa"}))
+	if err := poller.pollPressure(context.Background()); err != nil {
+		t.Fatalf("pollPressure() error = %v", err)
+	}
+	if _, ok := publisher.published["buderus/wp/pressure"]; ok {
+		t.Error("pressure with unexpected unit should not be published")
+	}
+}
+
+func TestPollPressureInvalidStateNotPublished(t *testing.T) {
+	// 255 ist zusätzlich unplausibel; der Fall 1,7 bar mit passendem Fehlerzustand
+	// isoliert dagegen den SensorFaultState-Zweig (Plausibilitätsprüfung würde 1,7 akzeptieren).
+	for _, value := range []float64{255, 1.7} {
+		t.Run(fmt.Sprint(value), func(t *testing.T) {
+			publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, nil))
+			fetcher := pressureFetcher(buderus.ValueResponse{
+				Value: ptr(value), UnitOfMeasure: "bar", State: []map[string]float64{{"invalid": value}},
+			})
+			poller := NewPoller(fetcher, publisher, "buderus/wp", nil, nil, logger)
+			if err := poller.pollPressure(context.Background()); err != nil {
+				t.Fatalf("pollPressure() error = %v", err)
+			}
+			if _, ok := publisher.published["buderus/wp/pressure"]; ok {
+				t.Error("invalid pressure should not be published")
+			}
+			if out := logs.String(); !strings.Contains(out, "system pressure unavailable") || !strings.Contains(out, "state=invalid") {
+				t.Errorf("expected warning with state=invalid, got %q", out)
+			}
+		})
+	}
+}
+
+func TestPollPressureImplausibleNotPublished(t *testing.T) {
+	for _, tt := range []struct {
+		value float64
+		want  string // leer = nicht veröffentlicht
+	}{
+		{0, ""}, {-0.5, ""}, {10.1, ""}, {255, ""}, {10, `{"system":10}`},
+	} {
+		t.Run(fmt.Sprint(tt.value), func(t *testing.T) {
+			poller, publisher := newPressurePoller(pressureFetcher(buderus.ValueResponse{Value: ptr(tt.value), UnitOfMeasure: "bar"}))
+			if err := poller.pollPressure(context.Background()); err != nil {
+				t.Fatalf("pollPressure() error = %v", err)
+			}
+			got, ok := publisher.published["buderus/wp/pressure"]
+			if tt.want == "" && ok {
+				t.Errorf("value %v should not be published, got %s", tt.value, got)
+			}
+			if tt.want != "" && got != tt.want {
+				t.Errorf("pressure payload = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPollPressureNilValueNotPublished(t *testing.T) {
+	poller, publisher := newPressurePoller(pressureFetcher(buderus.ValueResponse{UnitOfMeasure: "bar"}))
+	if err := poller.pollPressure(context.Background()); err != nil {
+		t.Fatalf("pollPressure() error = %v", err)
+	}
+	if _, ok := publisher.published["buderus/wp/pressure"]; ok {
+		t.Error("pressure without value should not be published")
+	}
+}
+
+func TestPollPressureFetchErrorDoesNotStopOtherTopics(t *testing.T) {
+	for name, fetchErr := range map[string]error{
+		"timeout":  context.DeadlineExceeded,
+		"notFound": buderus.ErrNotFound,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fetcher := &fakeFetcher{
+				values: map[string]buderus.ValueResponse{
+					buderus.PathCompressorPower:    {Value: ptr(460), Unit: "W"},
+					buderus.PathOutdoorTemperature: {Value: ptr(7.5), UnitOfMeasure: "C"},
+				},
+				errs: map[string]error{buderus.PathSystemPressure: fetchErr},
+			}
+			poller, publisher := newPressurePoller(fetcher)
+			poller.PollOnce(context.Background())
+
+			if _, ok := publisher.published["buderus/wp/pressure"]; ok {
+				t.Error("pressure should not be published on fetch error")
+			}
+			if got := publisher.published["buderus/wp/power"]; got != `{"compressorPower":460}` {
+				t.Errorf("power payload = %q", got)
+			}
+			if got := publisher.published["buderus/wp/temperatures"]; got != `{"outdoor":7.5}` {
+				t.Errorf("temperatures payload = %q", got)
+			}
+		})
+	}
+}
+
+func TestPollPressureQueriedEveryCycle(t *testing.T) {
+	fetcher := &fakeFetcher{errs: map[string]error{buderus.PathSystemPressure: buderus.ErrNotFound}}
+	poller, _ := newPressurePoller(fetcher)
+	poller.PollOnce(context.Background())
+	poller.PollOnce(context.Background())
+
+	calls := 0
+	for _, path := range fetcher.valueCalls {
+		if path == buderus.PathSystemPressure {
+			calls++
+		}
+	}
+	if calls != 2 {
+		t.Errorf("pressure queried %d times, want 2", calls)
+	}
+}
+
+func TestPollPressureRecordsPressureKey(t *testing.T) {
+	poller, _ := newPressurePoller(pressureFetcher(buderus.ValueResponse{Value: ptr(1.7), UnitOfMeasure: "bar"}))
+	recorder := &fakeRecorder{records: map[string]string{}, errs: map[string]error{}}
+	poller.SetRecorder(recorder)
+	poller.PollOnce(context.Background())
+
+	if got := recorder.records["pressure"]; got != `{"system":1.7}` {
+		t.Errorf("recorded pressure = %q", got)
+	}
+}
+
+func TestSensorsSystemPressureDiscovery(t *testing.T) {
+	sensors := Sensors("buderus/wp", DefaultCircuits, nil, VolumeFlows{})
+	device := mqtt.Device{ID: "wp", Name: "Wärmepumpe"}
+	messages, err := mqtt.BuildDiscoveryMessages("homeassistant", "buderus/wp/status", device, sensors)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantTopic := "homeassistant/sensor/wp/system_pressure/config"
+	for _, m := range messages {
+		if m.Topic != wantTopic {
+			continue
+		}
+		var payload struct {
+			Name            string `json:"name"`
+			UniqueID        string `json:"unique_id"`
+			DefaultEntityID string `json:"default_entity_id"`
+			StateTopic      string `json:"state_topic"`
+			ValueTemplate   string `json:"value_template"`
+			Unit            string `json:"unit_of_measurement"`
+			DeviceClass     string `json:"device_class"`
+			StateClass      string `json:"state_class"`
+			Device          struct {
+				Identifiers []string `json:"identifiers"`
+				ViaDevice   string   `json:"via_device"`
+			} `json:"device"`
+		}
+		if err := json.Unmarshal(m.Payload, &payload); err != nil {
+			t.Fatalf("invalid discovery JSON: %v", err)
+		}
+		if payload.UniqueID != "wp_system_pressure" || payload.DefaultEntityID != "sensor.wp_system_pressure" ||
+			payload.Name != "Systemdruck" || payload.Unit != "bar" || payload.DeviceClass != "pressure" ||
+			payload.StateClass != "measurement" || payload.StateTopic != "buderus/wp/pressure" ||
+			payload.ValueTemplate != "{{ value_json.system }}" {
+			t.Errorf("unexpected discovery payload: %+v", payload)
+		}
+		if len(payload.Device.Identifiers) != 1 || payload.Device.Identifiers[0] != "wp" || payload.Device.ViaDevice != "" {
 			t.Errorf("unexpected discovery device: %+v", payload.Device)
 		}
 		return

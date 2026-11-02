@@ -33,6 +33,8 @@ const (
 	// Volumenströme: Heizung in l/h (Sonderwert lowflow), Warmwasser in l/min.
 	PathHeatingVolumeFlow = "/heatSources/hs1/pumpVolumeFlow"
 	PathDHWVolumeFlow     = "/dhwCircuits/dhw1/volumeFlow"
+	// Systemdruck in bar (state invalid bei 255).
+	PathSystemPressure = "/heatSources/systemPressure"
 )
 
 // maxBodySize begrenzt die gelesene Antwortgröße (1 MiB).

@@ -198,6 +198,45 @@ func TestFetchOutdoorTemperature(t *testing.T) {
 	}
 }
 
+func TestFetchSystemPressure(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != PathSystemPressure {
+			t.Errorf("path = %q, want %q", r.URL.Path, PathSystemPressure)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"/heatSources/systemPressure","type":"floatValue","value":1.7,"unitOfMeasure":"bar","state":[{"invalid":255}]}`))
+	})
+
+	got, err := client.FetchValue(context.Background(), PathSystemPressure)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Value == nil || *got.Value != 1.7 {
+		t.Errorf("Value = %v, want 1.7", got.Value)
+	}
+	if got.UnitOfMeasure != "bar" {
+		t.Errorf("UnitOfMeasure = %q, want bar", got.UnitOfMeasure)
+	}
+	if got.SensorFaultState() != "" {
+		t.Errorf("valid pressure reported as fault (%q)", got.SensorFaultState())
+	}
+}
+
+func TestFetchSystemPressureInvalidState(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"/heatSources/systemPressure","type":"floatValue","value":255,"unitOfMeasure":"bar","state":[{"invalid":255}]}`))
+	})
+
+	got, err := client.FetchValue(context.Background(), PathSystemPressure)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.SensorFaultState() != "invalid" {
+		t.Errorf("SensorFaultState() = %q, want invalid", got.SensorFaultState())
+	}
+}
+
 func TestFetchStringHeatingCircuitMode(t *testing.T) {
 	path := HeatingCircuitPath("hc1", "currentSuWiMode")
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {

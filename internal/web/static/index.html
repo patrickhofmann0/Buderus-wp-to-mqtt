@@ -22,6 +22,7 @@
     <symbol id="i-flame" viewBox="0 0 24 24"><path d="M12 22a7 7 0 0 0 7-7c0-4-3-6-4-10-2 2-3 4-3 6-1-1-2-2-2-4-3 3-5 5-5 8a7 7 0 0 0 7 7Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
     <symbol id="i-valve" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 8v8l9-4-9-4ZM21 8v8l-9-4 9-4Z"/><path d="M12 12V5M9 5h6" stroke-linecap="round"/></g></symbol>
     <symbol id="i-flow" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h14M14 5l3 3-3 3"/><path d="M21 16H7M10 13l-3 3 3 3"/></g></symbol>
+    <symbol id="i-gauge" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-6"/><circle cx="12" cy="18" r="1.4" fill="currentColor"/></g></symbol>
   </svg>
 
   <header class="topbar">
@@ -103,6 +104,11 @@
         <h2><svg class="icon"><use href="#i-flow"/></svg>Volumenstrom</h2>
         <div class="row" data-show="flow.heating"><span>Heizung</span><b><span data-field="flow.heating" data-fmt="dec">–</span> l/min</b></div>
         <div class="row" data-show="flow.dhw"><span>Warmwasser</span><b><span data-field="flow.dhw" data-fmt="dec">–</span> l/min</b></div>
+      </article>
+
+      <article class="card" data-show="pressure.system">
+        <h2><svg class="icon"><use href="#i-gauge"/></svg>Systemdruck</h2>
+        <div class="big"><span data-field="pressure.system" data-fmt="dec">–</span><small>bar</small></div>
       </article>
 
       <!-- Heizkreise werden per JavaScript aus der Vorlage erzeugt -->

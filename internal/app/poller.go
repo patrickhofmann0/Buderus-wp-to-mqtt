@@ -177,6 +177,12 @@ type FlowPayload struct {
 	DHW     *float64 `json:"dhw,omitempty"`
 }
 
+// PressurePayload ist der JSON-Inhalt des Drucktopics in bar.
+// Nicht gelieferte Werte (nil) werden weggelassen.
+type PressurePayload struct {
+	System *float64 `json:"system,omitempty"`
+}
+
 // Poller fragt die Werte regelmäßig ab und veröffentlicht sie.
 type Poller struct {
 	volumeFlows     VolumeFlows
@@ -258,6 +264,11 @@ func FlowTopic(topicPrefix string) string {
 	return topicPrefix + "/flow"
 }
 
+// PressureTopic liefert das Topic für Druckwerte.
+func PressureTopic(topicPrefix string) string {
+	return topicPrefix + "/pressure"
+}
+
 // Run fragt sofort und danach im angegebenen Intervall ab, bis ctx beendet wird.
 // Fehler werden geloggt; das Programm läuft weiter.
 func (p *Poller) Run(ctx context.Context, interval time.Duration) {
@@ -294,6 +305,9 @@ func (p *Poller) PollOnce(ctx context.Context) {
 	}
 	if err := p.pollFlow(ctx); err != nil {
 		p.logger.Error("poll failed", "group", "flow", "error", err)
+	}
+	if err := p.pollPressure(ctx); err != nil {
+		p.logger.Error("poll failed", "group", "pressure", "error", err)
 	}
 	for _, circuit := range p.heatingCircuits {
 		if err := p.pollHeatingCircuit(ctx, circuit); err != nil {
@@ -520,6 +534,62 @@ func (p *Poller) pollFlow(ctx context.Context) error {
 	return p.publish(ctx, "flow", FlowTopic(p.topicPrefix), payload)
 }
 
+// Erwartete Einheit und Plausibilitätsbereich (exklusive Untergrenze) des Systemdrucks.
+const (
+	pressureUnit         = "bar"
+	minPlausiblePressure = 0
+	maxPlausiblePressure = 10
+)
+
+// fetchPressure liefert den Systemdruck in bar oder nil, wenn er fehlt oder unbrauchbar ist.
+// Ein 404 wird nicht beim Start erkannt, sondern in jeder Runde erneut versucht.
+func (p *Poller) fetchPressure(ctx context.Context) *float64 {
+	path := buderus.PathSystemPressure
+	resp, err := p.fetcher.FetchValue(ctx, path)
+	if err != nil {
+		if errors.Is(err, buderus.ErrNotFound) {
+			p.logger.Warn("system pressure not available", "path", path)
+		} else {
+			p.logger.Error("system pressure fetch failed", "path", path, "error", err)
+		}
+		return nil
+	}
+	if state := resp.SensorFaultState(); state != "" {
+		p.logger.Warn("system pressure unavailable", "path", path, "state", state)
+		return nil
+	}
+	if resp.Value == nil {
+		return nil
+	}
+	unit := resp.UnitOfMeasure
+	if unit == "" {
+		unit = resp.Unit
+	}
+	if unit != "" && !strings.EqualFold(unit, pressureUnit) {
+		p.logger.Warn("unexpected system pressure unit; skipping value", "path", path, "unit", unit, "expected", pressureUnit)
+		return nil
+	}
+	if *resp.Value <= minPlausiblePressure || *resp.Value > maxPlausiblePressure {
+		p.logger.Warn("system pressure outside plausible range", "path", path, "value", *resp.Value, "minimum", minPlausiblePressure, "maximum", maxPlausiblePressure)
+		return nil
+	}
+	return resp.Value
+}
+
+func (p *Poller) pollPressure(ctx context.Context) error {
+	state := PressurePayload{System: p.fetchPressure(ctx)}
+	if state.System == nil {
+		return nil
+	}
+
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshal pressure state: %w", err)
+	}
+
+	return p.publish(ctx, "pressure", PressureTopic(p.topicPrefix), payload)
+}
+
 func (p *Poller) pollMaintenance(ctx context.Context) error {
 	var state MaintenancePayload
 
@@ -638,6 +708,16 @@ func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCi
 		DeviceClass: "temperature",
 		StateClass:  "measurement",
 		Icon:        "mdi:thermometer",
+	})
+	sensors = append(sensors, mqtt.Sensor{
+		Key:         "system_pressure",
+		Name:        "Systemdruck",
+		StateTopic:  PressureTopic(topicPrefix),
+		JSONField:   "system",
+		Unit:        "bar",
+		DeviceClass: "pressure",
+		StateClass:  "measurement",
+		Icon:        "mdi:gauge",
 	})
 	for _, temperature := range []struct {
 		key       string
