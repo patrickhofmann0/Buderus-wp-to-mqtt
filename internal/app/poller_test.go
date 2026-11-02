@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"testing"
@@ -477,7 +479,7 @@ func TestTranslateSummerWinterMode(t *testing.T) {
 
 func TestSensors(t *testing.T) {
 	heatingCircuits := []HeatingCircuit{{Key: "hc1", Label: "Heizkreis 1"}, {Key: "hc2", Label: "Heizkreis 2", HasMixer: true}}
-	sensors := Sensors("buderus/wp", DefaultCircuits, heatingCircuits)
+	sensors := Sensors("buderus/wp", DefaultCircuits, heatingCircuits, VolumeFlows{})
 	if len(sensors) != 26 {
 		t.Fatalf("got %d sensors, want 26", len(sensors))
 	}
@@ -726,4 +728,391 @@ func TestPollOnceRecordsStateEvenIfPublishFails(t *testing.T) {
 	if recorder.completed != 1 {
 		t.Errorf("PollCompleted calls = %d, want 1", recorder.completed)
 	}
+}
+
+func TestLitersPerHourToLitersPerMinute(t *testing.T) {
+	for _, tt := range []struct{ in, want float64 }{
+		{0, 0}, {1134, 18.9}, {1000, 16.67}, {100, 1.67}, {61, 1.02}, {30, 0.5},
+	} {
+		if got := litersPerHourToLitersPerMinute(tt.in); got != tt.want {
+			t.Errorf("litersPerHourToLitersPerMinute(%v) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+var flowFaultStates = []map[string]float64{{"open": -32768}, {"short": 32767}}
+
+// newFlowPoller baut einen Poller mit beiden Volumenströmen und frischem Fake-Publisher.
+func newFlowPoller(fetcher *fakeFetcher) (*Poller, *fakePublisher) {
+	publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
+	poller := NewPoller(fetcher, publisher, "buderus/wp", nil, nil, discardLogger())
+	poller.SetVolumeFlows(VolumeFlows{Heating: true, DHW: true})
+	return poller, publisher
+}
+
+func TestPollFlowPublishesBothValues(t *testing.T) {
+	fetcher := &fakeFetcher{values: map[string]buderus.ValueResponse{
+		buderus.PathHeatingVolumeFlow: {Value: ptr(1134), UnitOfMeasure: "l/h", State: []map[string]float64{{"lowflow": 65535}}},
+		buderus.PathDHWVolumeFlow:     {Value: ptr(20), UnitOfMeasure: "l/min", State: flowFaultStates},
+	}}
+	poller, publisher := newFlowPoller(fetcher)
+
+	if err := poller.pollFlow(context.Background()); err != nil {
+		t.Fatalf("pollFlow() error = %v", err)
+	}
+	if got := publisher.published["buderus/wp/flow"]; got != `{"heating":18.9,"dhw":20}` {
+		t.Errorf("flow payload = %s", got)
+	}
+	if !publisher.retained["buderus/wp/flow"] {
+		t.Error("flow state should be retained")
+	}
+}
+
+func TestPollFlowLowflowOmitsOnlyHeating(t *testing.T) {
+	fetcher := &fakeFetcher{values: map[string]buderus.ValueResponse{
+		buderus.PathHeatingVolumeFlow: {Value: ptr(65535), UnitOfMeasure: "l/h", State: []map[string]float64{{"lowflow": 65535}}},
+		buderus.PathDHWVolumeFlow:     {Value: ptr(12), UnitOfMeasure: "l/min"},
+	}}
+	poller, publisher := newFlowPoller(fetcher)
+
+	if err := poller.pollFlow(context.Background()); err != nil {
+		t.Fatalf("pollFlow() error = %v", err)
+	}
+	if got := publisher.published["buderus/wp/flow"]; got != `{"dhw":12}` {
+		t.Errorf("flow payload = %s, want dhw only", got)
+	}
+}
+
+func TestPollFlowHeatingLowflowWithoutStateOmitsOnlyHeating(t *testing.T) {
+	for name, state := range map[string][]map[string]float64{"ohne state": nil, "leeres state": {}} {
+		t.Run(name, func(t *testing.T) {
+			fetcher := &fakeFetcher{values: map[string]buderus.ValueResponse{
+				buderus.PathHeatingVolumeFlow: {Value: ptr(65535), UnitOfMeasure: "l/h", State: state},
+				buderus.PathDHWVolumeFlow:     {Value: ptr(12), UnitOfMeasure: "l/min"},
+			}}
+			poller, publisher := newFlowPoller(fetcher)
+			if err := poller.pollFlow(context.Background()); err != nil {
+				t.Fatalf("pollFlow() error = %v", err)
+			}
+			if got := publisher.published["buderus/wp/flow"]; got != `{"dhw":12}` {
+				t.Errorf("flow payload = %s, want dhw only", got)
+			}
+		})
+	}
+}
+
+func TestPollFlowDHWFaultValuesWithoutStateOmitOnlyDHW(t *testing.T) {
+	for _, value := range []float64{-32768, 32767} {
+		fetcher := &fakeFetcher{values: map[string]buderus.ValueResponse{
+			buderus.PathHeatingVolumeFlow: {Value: ptr(600), UnitOfMeasure: "l/h"},
+			buderus.PathDHWVolumeFlow:     {Value: ptr(value), UnitOfMeasure: "l/min"},
+		}}
+		poller, publisher := newFlowPoller(fetcher)
+		if err := poller.pollFlow(context.Background()); err != nil {
+			t.Fatalf("pollFlow() error = %v", err)
+		}
+		if got := publisher.published["buderus/wp/flow"]; got != `{"heating":10}` {
+			t.Errorf("value %v: flow payload = %s, want heating only", value, got)
+		}
+	}
+}
+
+func TestPollFlowDHWSensorFaultOmitsOnlyDHW(t *testing.T) {
+	for _, value := range []float64{-32768, 32767} {
+		fetcher := &fakeFetcher{values: map[string]buderus.ValueResponse{
+			buderus.PathHeatingVolumeFlow: {Value: ptr(600), UnitOfMeasure: "l/h"},
+			buderus.PathDHWVolumeFlow:     {Value: ptr(value), UnitOfMeasure: "l/min", State: flowFaultStates},
+		}}
+		poller, publisher := newFlowPoller(fetcher)
+
+		if err := poller.pollFlow(context.Background()); err != nil {
+			t.Fatalf("pollFlow() error = %v", err)
+		}
+		if got := publisher.published["buderus/wp/flow"]; got != `{"heating":10}` {
+			t.Errorf("value %v: flow payload = %s, want heating only", value, got)
+		}
+	}
+}
+
+func TestPollFlowUnexpectedUnitOmitsField(t *testing.T) {
+	tests := []struct {
+		name    string
+		heating buderus.ValueResponse
+		dhw     buderus.ValueResponse
+		want    string
+	}{
+		{
+			name:    "falsche Einheit",
+			heating: buderus.ValueResponse{Value: ptr(600), UnitOfMeasure: "m3/h"},
+			dhw:     buderus.ValueResponse{Value: ptr(5), UnitOfMeasure: "l/min"},
+			want:    `{"dhw":5}`,
+		},
+		{
+			name:    "leere UnitOfMeasure, Unit als Rückfall",
+			heating: buderus.ValueResponse{Value: ptr(600), Unit: "l/h"},
+			dhw:     buderus.ValueResponse{Value: ptr(5), UnitOfMeasure: "L/min"},
+			want:    `{"heating":10,"dhw":5}`,
+		},
+		{
+			name:    "beide Einheiten leer",
+			heating: buderus.ValueResponse{Value: ptr(600)},
+			dhw:     buderus.ValueResponse{Value: ptr(5), Unit: "l/h"},
+			want:    `{"heating":10}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fetcher := &fakeFetcher{values: map[string]buderus.ValueResponse{
+				buderus.PathHeatingVolumeFlow: tt.heating,
+				buderus.PathDHWVolumeFlow:     tt.dhw,
+			}}
+			poller, publisher := newFlowPoller(fetcher)
+			if err := poller.pollFlow(context.Background()); err != nil {
+				t.Fatalf("pollFlow() error = %v", err)
+			}
+			if got := publisher.published["buderus/wp/flow"]; got != tt.want {
+				t.Errorf("flow payload = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPollFlowNilValueOmitsField(t *testing.T) {
+	fetcher := &fakeFetcher{values: map[string]buderus.ValueResponse{
+		buderus.PathHeatingVolumeFlow: {UnitOfMeasure: "l/h"},
+		buderus.PathDHWVolumeFlow:     {Value: ptr(7), UnitOfMeasure: "l/min"},
+	}}
+	poller, publisher := newFlowPoller(fetcher)
+	if err := poller.pollFlow(context.Background()); err != nil {
+		t.Fatalf("pollFlow() error = %v", err)
+	}
+	if got := publisher.published["buderus/wp/flow"]; got != `{"dhw":7}` {
+		t.Errorf("flow payload = %s, want dhw only", got)
+	}
+}
+
+func TestPollFlowFetchErrorOmitsOnlyThatField(t *testing.T) {
+	for _, err := range []error{errors.New("gateway unreachable"), buderus.ErrNotFound} {
+		fetcher := &fakeFetcher{
+			values: map[string]buderus.ValueResponse{
+				buderus.PathDHWVolumeFlow: {Value: ptr(9), UnitOfMeasure: "l/min"},
+			},
+			errs: map[string]error{buderus.PathHeatingVolumeFlow: err},
+		}
+		poller, publisher := newFlowPoller(fetcher)
+		if pollErr := poller.pollFlow(context.Background()); pollErr != nil {
+			t.Fatalf("pollFlow() error = %v", pollErr)
+		}
+		if got := publisher.published["buderus/wp/flow"]; got != `{"dhw":9}` {
+			t.Errorf("error %v: flow payload = %s, want dhw only", err, got)
+		}
+	}
+}
+
+func TestPollFlowNothingPublishedWhenBothMissing(t *testing.T) {
+	fetcher := &fakeFetcher{errs: map[string]error{
+		buderus.PathHeatingVolumeFlow: errors.New("down"),
+		buderus.PathDHWVolumeFlow:     buderus.ErrNotFound,
+	}}
+	poller, publisher := newFlowPoller(fetcher)
+	if err := poller.pollFlow(context.Background()); err != nil {
+		t.Fatalf("pollFlow() error = %v", err)
+	}
+	if _, ok := publisher.published["buderus/wp/flow"]; ok {
+		t.Error("flow should not be published when both values are missing")
+	}
+}
+
+func TestPollFlowSkipsUndetectedEndpoints(t *testing.T) {
+	fetcher := &fakeFetcher{values: map[string]buderus.ValueResponse{
+		buderus.PathHeatingVolumeFlow: {Value: ptr(600), UnitOfMeasure: "l/h"},
+		buderus.PathDHWVolumeFlow:     {Value: ptr(5), UnitOfMeasure: "l/min"},
+	}}
+	publisher := &fakePublisher{published: map[string]string{}, retained: map[string]bool{}}
+	poller := NewPoller(fetcher, publisher, "buderus/wp", nil, nil, discardLogger())
+
+	if err := poller.pollFlow(context.Background()); err != nil {
+		t.Fatalf("pollFlow() error = %v", err)
+	}
+	if len(fetcher.valueCalls) != 0 {
+		t.Errorf("value calls = %v, want none without SetVolumeFlows", fetcher.valueCalls)
+	}
+	if _, ok := publisher.published["buderus/wp/flow"]; ok {
+		t.Error("flow should not be published without detected endpoints")
+	}
+
+	poller.SetVolumeFlows(VolumeFlows{DHW: true})
+	if err := poller.pollFlow(context.Background()); err != nil {
+		t.Fatalf("pollFlow() error = %v", err)
+	}
+	for _, path := range fetcher.valueCalls {
+		if path == buderus.PathHeatingVolumeFlow {
+			t.Error("heating volume flow should not be queried when it was not detected")
+		}
+	}
+	if got := publisher.published["buderus/wp/flow"]; got != `{"dhw":5}` {
+		t.Errorf("flow payload = %s, want dhw only", got)
+	}
+}
+
+func TestPollFlowRecordsFlowKey(t *testing.T) {
+	fetcher := &fakeFetcher{values: map[string]buderus.ValueResponse{
+		buderus.PathHeatingVolumeFlow: {Value: ptr(1134), UnitOfMeasure: "l/h"},
+		buderus.PathDHWVolumeFlow:     {Value: ptr(12), UnitOfMeasure: "l/min"},
+	}}
+	poller, publisher := newFlowPoller(fetcher)
+	recorder := &fakeRecorder{records: map[string]string{}, errs: map[string]error{}}
+	poller.SetRecorder(recorder)
+
+	poller.PollOnce(context.Background())
+	want := `{"heating":18.9,"dhw":12}`
+	if got := recorder.records["flow"]; got != want {
+		t.Errorf("recorded flow = %s, want %s", got, want)
+	}
+	if got := publisher.published["buderus/wp/flow"]; got != want {
+		t.Errorf("published flow = %s, want %s", got, want)
+	}
+}
+
+func TestDetectVolumeFlows(t *testing.T) {
+	tests := []struct {
+		name string
+		errs map[string]error
+		want VolumeFlows
+	}{
+		{"beide vorhanden", nil, VolumeFlows{Heating: true, DHW: true}},
+		{
+			"Heizung 404",
+			map[string]error{buderus.PathHeatingVolumeFlow: buderus.ErrNotFound},
+			VolumeFlows{DHW: true},
+		},
+		{
+			"Warmwasser 404",
+			map[string]error{buderus.PathDHWVolumeFlow: fmt.Errorf("GET: %w", buderus.ErrNotFound)},
+			VolumeFlows{Heating: true},
+		},
+		{
+			"anderer Fehler nimmt Vorhandensein an",
+			map[string]error{
+				buderus.PathHeatingVolumeFlow: errors.New("timeout"),
+				buderus.PathDHWVolumeFlow:     buderus.ErrNotFound,
+			},
+			VolumeFlows{Heating: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fetcher := &fakeFetcher{errs: tt.errs}
+			if got := DetectVolumeFlows(context.Background(), fetcher, discardLogger()); got != tt.want {
+				t.Errorf("DetectVolumeFlows() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSensorsVolumeFlow(t *testing.T) {
+	sensors := Sensors("buderus/wp", DefaultCircuits, nil, VolumeFlows{Heating: true, DHW: true})
+	base := Sensors("buderus/wp", DefaultCircuits, nil, VolumeFlows{})
+	if len(sensors) != len(base)+2 {
+		t.Fatalf("got %d sensors, want %d", len(sensors), len(base)+2)
+	}
+
+	want := map[string]struct {
+		field, icon string
+		subDevice   mqtt.SubDevice
+	}{
+		"heating_volume_flow": {"heating", "mdi:water-pump", mqtt.SubDevice{Key: "heating", Name: "Heizung"}},
+		"dhw_volume_flow":     {"dhw", "mdi:water-sync", mqtt.SubDevice{Key: "dhw", Name: "Warmwasser"}},
+	}
+	seenSubDevice := false
+	found := map[string]bool{}
+	for _, s := range sensors {
+		if s.SubDevice != nil {
+			seenSubDevice = true
+		} else if seenSubDevice {
+			t.Errorf("main-device sensor %q appears after a sub-device sensor", s.Key)
+		}
+		w, ok := want[s.Key]
+		if !ok {
+			continue
+		}
+		found[s.Key] = true
+		if s.Name != "Volumenstrom" || s.StateTopic != "buderus/wp/flow" || s.JSONField != w.field ||
+			s.Unit != "L/min" || s.DeviceClass != "volume_flow_rate" || s.StateClass != "measurement" || s.Icon != w.icon {
+			t.Errorf("unexpected volume flow sensor %q: %+v", s.Key, s)
+		}
+		if s.SubDevice == nil || *s.SubDevice != w.subDevice {
+			t.Errorf("sensor %q sub-device = %+v, want %+v", s.Key, s.SubDevice, w.subDevice)
+		}
+	}
+	if len(found) != 2 {
+		t.Errorf("found volume flow sensors = %v, want both", found)
+	}
+
+	for _, tt := range []struct {
+		flows VolumeFlows
+		keys  []string
+	}{
+		{VolumeFlows{}, nil},
+		{VolumeFlows{Heating: true}, []string{"heating_volume_flow"}},
+		{VolumeFlows{DHW: true}, []string{"dhw_volume_flow"}},
+	} {
+		got := map[string]bool{}
+		for _, s := range Sensors("buderus/wp", DefaultCircuits, nil, tt.flows) {
+			if s.Key == "heating_volume_flow" || s.Key == "dhw_volume_flow" {
+				got[s.Key] = true
+			}
+		}
+		if len(got) != len(tt.keys) {
+			t.Errorf("flows %+v: got sensors %v, want %v", tt.flows, got, tt.keys)
+		}
+		for _, k := range tt.keys {
+			if !got[k] {
+				t.Errorf("flows %+v: missing sensor %q", tt.flows, k)
+			}
+		}
+	}
+}
+
+func TestSensorsVolumeFlowDiscovery(t *testing.T) {
+	sensors := Sensors("buderus/wp", DefaultCircuits, nil, VolumeFlows{Heating: true})
+	device := mqtt.Device{ID: "wp", Name: "Wärmepumpe"}
+	messages, err := mqtt.BuildDiscoveryMessages("homeassistant", "buderus/wp/status", device, sensors)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantTopic := "homeassistant/sensor/wp/heating_volume_flow/config"
+	for _, m := range messages {
+		if m.Topic != wantTopic {
+			continue
+		}
+		var payload struct {
+			Name            string `json:"name"`
+			UniqueID        string `json:"unique_id"`
+			DefaultEntityID string `json:"default_entity_id"`
+			StateTopic      string `json:"state_topic"`
+			ValueTemplate   string `json:"value_template"`
+			Unit            string `json:"unit_of_measurement"`
+			DeviceClass     string `json:"device_class"`
+			Device          struct {
+				Identifiers []string `json:"identifiers"`
+				Name        string   `json:"name"`
+				ViaDevice   string   `json:"via_device"`
+			} `json:"device"`
+		}
+		if err := json.Unmarshal(m.Payload, &payload); err != nil {
+			t.Fatalf("invalid discovery JSON: %v", err)
+		}
+		if payload.UniqueID != "wp_heating_volume_flow" || payload.DefaultEntityID != "sensor.wp_heating_volume_flow" ||
+			payload.Unit != "L/min" || payload.DeviceClass != "volume_flow_rate" || payload.Name != "Volumenstrom" ||
+			payload.StateTopic != "buderus/wp/flow" || payload.ValueTemplate != "{{ value_json.heating }}" {
+			t.Errorf("unexpected discovery payload: %+v", payload)
+		}
+		if len(payload.Device.Identifiers) != 1 || payload.Device.Identifiers[0] != "wp_heating" ||
+			payload.Device.Name != "Heizung" || payload.Device.ViaDevice != "wp" {
+			t.Errorf("unexpected discovery device: %+v", payload.Device)
+		}
+		return
+	}
+	t.Errorf("discovery message %q not found", wantTopic)
 }

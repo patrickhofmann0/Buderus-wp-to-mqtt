@@ -22,6 +22,8 @@ Aktuell werden abgefragt:
 | HK1 Raumsollwert | `/heatingCircuits/hc1/currentRoomSetpoint` | eingestellte Raumtemperatur (°C) |
 | HK2 Raumsollwert | `/heatingCircuits/hc2/currentRoomSetpoint` | eingestellte Raumtemperatur (°C) |
 | Mischerstellung | `/heatingCircuits/{hc}/mixerPosition` | Mischerposition in % (nur Heizkreise mit Mischer) |
+| Volumenstrom Heizung | `/heatSources/hs1/pumpVolumeFlow` | Volumenstrom der Heizung (l/min, vom Gateway in l/h geliefert und umgerechnet) |
+| Volumenstrom Warmwasser | `/dhwCircuits/dhw1/volumeFlow` | Volumenstrom des Warmwassers (l/min) |
 
 Manche Gateways (z. B. MX400) liefern keinen Gesamt-Stromverbrauch (`electricity`), sondern nur `compressor` und `eheater`. In diesem Fall wird `electricity` als Summe der beiden berechnet.
 
@@ -84,7 +86,7 @@ Die TLS-Prüfung zum Gateway ist deaktiviert, da es ein selbstsigniertes Zertifi
 
 ## Weboberfläche
 
-Mit `WEB_ENABLED=true` liefert das Programm unter `http://<host>:8080/` ein kleines Dashboard mit den zuletzt abgefragten Werten (Kacheln, Gauges, Hell-/Dunkelmodus nach Systemeinstellung). Die Werte werden per Server-Sent Events live aktualisiert, sobald eine Abfrage abgeschlossen ist. Es gibt keine Anmeldung – nur im lokalen Netz betreiben.
+Mit `WEB_ENABLED=true` liefert das Programm unter `http://<host>:8080/` ein kleines Dashboard mit den zuletzt abgefragten Werten (Kacheln, Gauges, Hell-/Dunkelmodus nach Systemeinstellung). Die Werte werden per Server-Sent Events live aktualisiert, sobald eine Abfrage abgeschlossen ist. Es gibt keine Anmeldung – nur im lokalen Netz betreiben. Die Kachel „Volumenstrom“ zeigt den Volumenstrom von Heizung und Warmwasser in l/min, sofern das Gateway die Werte liefert.
 
 | Pfad | Inhalt |
 |---|---|
@@ -107,6 +109,7 @@ Beispiel mit `MQTT_TOPIC_PREFIX=buderus/wp`:
 | `buderus/wp/power` | `{"compressorPower":460,"modulation":13}` | ja |
 | `buderus/wp/temperatures` | `{"outdoor":7.5,"supply":30.6,"return":30,"dhwActual":43,"dhwSetpoint":48}` | ja |
 | `buderus/wp/maintenance` | `{"startsHeating":737,"startsDhw":194,"startsCooling":0,"startsTotal":931,"workingTimeHeating":19515812,"workingTimeDhw":1135643,"workingTimeCooling":0,"workingTimeTotal":20651456}` | ja |
+| `buderus/wp/flow` | `{"heating":18.9,"dhw":12}` | ja |
 | `buderus/wp/hc1` | `{"summerWinterMode":"Winter","roomSetpoint":21}` | ja |
 | `buderus/wp/hc2` | `{"summerWinterMode":"Sommer","mixerPosition":49}` (Heizkreis aus; Mischer vorhanden) | ja |
 
@@ -135,12 +138,16 @@ Beispiel mit `MQTT_TOPIC_PREFIX=buderus/wp`:
 | `summerWinterMode` | Heizkreisbetrieb: `Winter`, `Sommer` oder `Kühlen` |
 | `roomSetpoint` | Eingestellte Raumtemperatur in °C; bei ausgeschaltetem Heizkreis (`off`) weggelassen |
 | `mixerPosition` | Stellung des Heizkreismischers in %; nur vorhanden, wenn der Heizkreis einen Mischer hat |
+| `heating` | Volumenstrom der Heizung in l/min (Gateway liefert l/h, umgerechnet und auf 2 Nachkommastellen gerundet); bei Sonderwert `lowflow` (65535) weggelassen |
+| `dhw` | Volumenstrom des Warmwassers in l/min; bei Sensorfehler (`open`/`short`) weggelassen |
+
+Die Felder `heating` und `dhw` stehen im Topic `buderus/wp/flow`; fehlende Werte (nicht geliefert, Sensorfehler, unerwartete Einheit, Abfragefehler) werden einzeln weggelassen.
 
 Fehlt ein Wert in der Antwort des Gateways, wird das Feld weggelassen. Mit `LOG_LEVEL=debug` wird die Rohantwort des Gateways geloggt.
 
 ### Home Assistant
 
-Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw`) vier Energiesensoren sowie Sensoren für Verdichterleistung, Modulation, fünf Temperaturwerte, Verdichterstarts und Betriebszeiten, die beiden Heizkreis-Modi und die Raumsollwerte angelegt. Die folgende Tabelle listet die Sensor-Keys und Anzeigenamen:
+Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw`) vier Energiesensoren sowie Sensoren für Verdichterleistung, Modulation, fünf Temperaturwerte, Volumenströme (Heizung, Warmwasser), Verdichterstarts und Betriebszeiten, die beiden Heizkreis-Modi und die Raumsollwerte angelegt. Die folgende Tabelle listet die Sensor-Keys und Anzeigenamen:
 
 | Sensor-Key | Name |
 |---|---|
@@ -166,6 +173,8 @@ Bei `MQTT_DISCOVERY_ENABLED=true` werden beim Start pro Bereich (`heating`, `dhw
 | `hc1_room_setpoint` | Raumsollwert (°C) |
 | `hc2_room_setpoint` | Raumsollwert (°C) |
 | `<hc>_mixer_position` | Mischerstellung (%) – wird nur für erkannte Heizkreise mit Mischer angelegt |
+| `heating_volume_flow` | Volumenstrom (L/min) – nur wenn beim Start erkannt |
+| `dhw_volume_flow` | Volumenstrom (L/min) – nur wenn beim Start erkannt |
 
 Discovery-Topic: `<MQTT_HA_DISCOVERY_PREFIX>/sensor/<DEVICE_ID>/<sensor-key>/config`
 
@@ -174,8 +183,8 @@ Die Sensoren sind in Home Assistant auf mehrere Geräte verteilt. Untergeräte s
 | Home-Assistant-Gerät | Zugeordnete Werte | Geräte-ID |
 |---|---|---|
 | Buderus Wärmepumpe (Hauptgerät) | Verdichterleistung, Modulation, Vorlauf, Rücklauf, Außentemperatur, Verdichterstarts und Betriebszeit gesamt | `<DEVICE_ID>` |
-| Heizung | Energiezähler Heizung, Verdichterstarts und Betriebszeit Heizung | `<DEVICE_ID>_heating` |
-| Warmwasser | Energiezähler, Warmwasser-Ist-/Solltemperatur, Verdichterstarts und Betriebszeit Warmwasser | `<DEVICE_ID>_dhw` |
+| Heizung | Energiezähler Heizung, Volumenstrom, Verdichterstarts und Betriebszeit Heizung | `<DEVICE_ID>_heating` |
+| Warmwasser | Energiezähler, Volumenstrom, Warmwasser-Ist-/Solltemperatur, Verdichterstarts und Betriebszeit Warmwasser | `<DEVICE_ID>_dhw` |
 | Heizkreis 1 | Modus und Raumsollwert | `<DEVICE_ID>_hc1` |
 | Heizkreis 2 | Modus, Raumsollwert und ggf. Mischerstellung | `<DEVICE_ID>_hc2` |
 
@@ -183,11 +192,13 @@ Verdichterstarts und Betriebszeit für Kühlen stehen nur im MQTT-Payload (`star
 
 Discovery-Topics und Entitäts-IDs bleiben weiterhin auf `<DEVICE_ID>` basierend. Dadurch bleiben `unique_id`, Entity-IDs und die Zuordnung vorhandener Statistiken erhalten; nur die Gerätezuordnung ändert sich. Sensor-Namen enthalten nicht erneut den Gerätenamen, da Home Assistant diesen im Kontext des Geräts ergänzt.
 
-Die Energiesensoren haben `device_class: energy` und `state_class: total_increasing` und können direkt im **Energie-Dashboard** verwendet werden. Verdichterstarts verwenden `state_class: total_increasing`; Betriebszeiten in Sekunden verwenden `device_class: duration` und ebenfalls `state_class: total_increasing`. Leistung, Modulation, Temperatur und Raumsollwerte verwenden `state_class: measurement`; die Modus-Sensoren sind Enums mit den Optionen „Winter“, „Sommer“ und „Kühlen“.
+Die Energiesensoren haben `device_class: energy` und `state_class: total_increasing` und können direkt im **Energie-Dashboard** verwendet werden. Verdichterstarts verwenden `state_class: total_increasing`; Betriebszeiten in Sekunden verwenden `device_class: duration` und ebenfalls `state_class: total_increasing`. Leistung, Modulation, Temperatur, Volumenstrom und Raumsollwerte verwenden `state_class: measurement`; die Modus-Sensoren sind Enums mit den Optionen „Winter“, „Sommer“ und „Kühlen“.
 
 Temperaturfelder mit einem `open`-/`short`-Fehlerwert oder außerhalb von −50 bis 150 °C werden einzeln weggelassen; gültige Temperaturwerte werden weiterhin veröffentlicht. Bei einem fehlenden Feld zeigt Home Assistant den jeweiligen Sensor als „unbekannt“ an.
 
 Beim Start prüft der Dienst für `hc1` und `hc2`, ob der Mischer-Endpunkt verfügbar ist. Bei HTTP 404 werden Mischerabfrage und Sensor für diesen Heizkreis ausgelassen. Bei anderen Fehlern wird der Mischer vorsichtshalber als vorhanden angenommen und weiter abgefragt; ein vorübergehender Gateway-Ausfall verhindert so nicht die Sensorerkennung.
+
+Ebenso prüft der Dienst beim Start die beiden Volumenstrom-Endpunkte. Bei HTTP 404 werden Abfrage und Sensor für den jeweiligen Wert ausgelassen; bei anderen Fehlern wird er vorsichtshalber als vorhanden angenommen und weiter abgefragt.
 
 ## Lokale Entwicklung
 

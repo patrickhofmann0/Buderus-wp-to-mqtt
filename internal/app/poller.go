@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/patrickhofmann0/Buderus-wp-to-mqtt/internal/buderus"
@@ -80,6 +82,47 @@ func DetectHeatingCircuits(ctx context.Context, fetcher Fetcher, logger *slog.Lo
 	return circuits
 }
 
+// VolumeFlows hält fest, welche Volumenstrom-Endpunkte das Gateway bereitstellt.
+type VolumeFlows struct {
+	Heating bool
+	DHW     bool
+}
+
+// Erwartete Einheiten der Volumenstrom-Endpunkte (Vergleich ohne Groß-/Kleinschreibung).
+const (
+	heatingVolumeFlowUnit = "l/h"
+	dhwVolumeFlowUnit     = "l/min"
+)
+
+// DetectVolumeFlows erkennt beim Start, welche Volumenstrom-Endpunkte vorhanden sind.
+// Bei 404 wird der Wert ausgelassen; bei anderen Fehlern wird er vorsichtshalber weiter abgefragt.
+func DetectVolumeFlows(ctx context.Context, fetcher Fetcher, logger *slog.Logger) VolumeFlows {
+	return VolumeFlows{
+		Heating: detectEndpoint(ctx, fetcher, logger, "heating", buderus.PathHeatingVolumeFlow),
+		DHW:     detectEndpoint(ctx, fetcher, logger, "dhw", buderus.PathDHWVolumeFlow),
+	}
+}
+
+func detectEndpoint(ctx context.Context, fetcher Fetcher, logger *slog.Logger, key, path string) bool {
+	_, err := fetcher.FetchValue(ctx, path)
+	switch {
+	case err == nil:
+		logger.Info("volume flow detected", "circuit", key)
+		return true
+	case errors.Is(err, buderus.ErrNotFound):
+		logger.Info("volume flow not available", "circuit", key)
+		return false
+	default:
+		logger.Warn("volume flow detection failed; assuming it is present", "circuit", key, "error", err)
+		return true
+	}
+}
+
+// litersPerHourToLitersPerMinute rechnet l/h in l/min um und rundet auf 2 Nachkommastellen.
+func litersPerHourToLitersPerMinute(v float64) float64 {
+	return math.Round(v/60*100) / 100
+}
+
 var summerWinterModes = map[string]string{
 	"forced":  "Winter",
 	"off":     "Sommer",
@@ -127,8 +170,16 @@ type MaintenancePayload struct {
 	WorkingTimeTotal   *float64 `json:"workingTimeTotal,omitempty"`
 }
 
+// FlowPayload ist der JSON-Inhalt des Volumenstromtopics in l/min.
+// Nicht gelieferte Werte (nil) werden weggelassen.
+type FlowPayload struct {
+	Heating *float64 `json:"heating,omitempty"`
+	DHW     *float64 `json:"dhw,omitempty"`
+}
+
 // Poller fragt die Werte regelmäßig ab und veröffentlicht sie.
 type Poller struct {
+	volumeFlows     VolumeFlows
 	fetcher         Fetcher
 	publisher       Publisher
 	topicPrefix     string
@@ -145,6 +196,11 @@ type StateRecorder interface {
 	Record(key string, payload []byte, publishErr error)
 	// PollCompleted wird nach jedem vollständigen Abfragedurchlauf aufgerufen.
 	PollCompleted(at time.Time)
+}
+
+// SetVolumeFlows legt fest, welche Volumenströme abgefragt werden (Standard: keine).
+func (p *Poller) SetVolumeFlows(flows VolumeFlows) {
+	p.volumeFlows = flows
 }
 
 // SetRecorder setzt einen optionalen StateRecorder (≈ Setter Injection).
@@ -197,6 +253,11 @@ func MaintenanceTopic(topicPrefix string) string {
 	return topicPrefix + "/maintenance"
 }
 
+// FlowTopic liefert das Topic für Volumenströme.
+func FlowTopic(topicPrefix string) string {
+	return topicPrefix + "/flow"
+}
+
 // Run fragt sofort und danach im angegebenen Intervall ab, bis ctx beendet wird.
 // Fehler werden geloggt; das Programm läuft weiter.
 func (p *Poller) Run(ctx context.Context, interval time.Duration) {
@@ -230,6 +291,9 @@ func (p *Poller) PollOnce(ctx context.Context) {
 	}
 	if err := p.pollMaintenance(ctx); err != nil {
 		p.logger.Error("poll failed", "group", "maintenance", "error", err)
+	}
+	if err := p.pollFlow(ctx); err != nil {
+		p.logger.Error("poll failed", "group", "flow", "error", err)
 	}
 	for _, circuit := range p.heatingCircuits {
 		if err := p.pollHeatingCircuit(ctx, circuit); err != nil {
@@ -376,6 +440,86 @@ func (p *Poller) pollTemperatures(ctx context.Context) error {
 	return p.publish(ctx, "temperatures", TemperaturesTopic(p.topicPrefix), payload)
 }
 
+// heatingVolumeFlowSpecialValue erkennt den Sonderwert der Heizung (l/h) unabhängig vom
+// optionalen state-Array der Antwort: 65535 bedeutet "lowflow".
+func heatingVolumeFlowSpecialValue(v float64) (string, bool) {
+	if v == 65535 {
+		return "lowflow", true
+	}
+	return "", false
+}
+
+// dhwVolumeFlowSpecialValue erkennt die Fehlerwerte des Warmwasser-Volumenstroms (l/min)
+// unabhängig vom optionalen state-Array: -32768 bedeutet "open", 32767 "short".
+func dhwVolumeFlowSpecialValue(v float64) (string, bool) {
+	switch v {
+	case -32768:
+		return "open", true
+	case 32767:
+		return "short", true
+	}
+	return "", false
+}
+
+// fetchVolumeFlow liefert den Volumenstrom in der erwarteten Einheit oder nil, wenn er fehlt oder unbrauchbar ist.
+// special prüft endpunktspezifische Sonderwerte; sie haben Vorrang vor der Einheitenprüfung.
+func (p *Poller) fetchVolumeFlow(ctx context.Context, path, expectedUnit string, special func(float64) (string, bool)) *float64 {
+	resp, err := p.fetcher.FetchValue(ctx, path)
+	if err != nil {
+		if errors.Is(err, buderus.ErrNotFound) {
+			p.logger.Warn("volume flow no longer available", "path", path)
+		} else {
+			p.logger.Error("volume flow fetch failed", "path", path, "error", err)
+		}
+		return nil
+	}
+	if state := resp.SensorFaultState(); state != "" {
+		p.logger.Warn("volume flow unavailable", "path", path, "state", state, "value", *resp.Value)
+		return nil
+	}
+	if resp.Value == nil {
+		return nil
+	}
+	if state, ok := special(*resp.Value); ok {
+		p.logger.Warn("volume flow special value; skipping value", "path", path, "state", state, "value", *resp.Value)
+		return nil
+	}
+	unit := resp.UnitOfMeasure
+	if unit == "" {
+		unit = resp.Unit
+	}
+	if unit != "" && !strings.EqualFold(unit, expectedUnit) {
+		p.logger.Warn("unexpected volume flow unit; skipping value", "path", path, "unit", unit, "expected", expectedUnit)
+		return nil
+	}
+	return resp.Value
+}
+
+func (p *Poller) pollFlow(ctx context.Context) error {
+	var state FlowPayload
+
+	if p.volumeFlows.Heating {
+		if v := p.fetchVolumeFlow(ctx, buderus.PathHeatingVolumeFlow, heatingVolumeFlowUnit, heatingVolumeFlowSpecialValue); v != nil {
+			liters := litersPerHourToLitersPerMinute(*v)
+			state.Heating = &liters
+		}
+	}
+	if p.volumeFlows.DHW {
+		state.DHW = p.fetchVolumeFlow(ctx, buderus.PathDHWVolumeFlow, dhwVolumeFlowUnit, dhwVolumeFlowSpecialValue)
+	}
+
+	if state.Heating == nil && state.DHW == nil {
+		return nil
+	}
+
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshal flow state: %w", err)
+	}
+
+	return p.publish(ctx, "flow", FlowTopic(p.topicPrefix), payload)
+}
+
 func (p *Poller) pollMaintenance(ctx context.Context) error {
 	var state MaintenancePayload
 
@@ -436,7 +580,7 @@ func (p *Poller) pollCircuit(ctx context.Context, c Circuit) error {
 }
 
 // Sensors liefert die Sensor-Definitionen für die Home-Assistant-Discovery.
-func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCircuit) []mqtt.Sensor {
+func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCircuit, volumeFlows VolumeFlows) []mqtt.Sensor {
 	// Felder, für die pro Circuit ein Sensor angelegt wird.
 	fields := []struct {
 		keySuffix string
@@ -615,6 +759,34 @@ func Sensors(topicPrefix string, circuits []Circuit, heatingCircuits []HeatingCi
 			SubDevice:   &mqtt.SubDevice{Key: "dhw", Name: "Warmwasser"},
 		},
 	)
+
+	// Volumenströme nur, wenn der Endpunkt beim Start erkannt wurde.
+	if volumeFlows.Heating {
+		sensors = append(sensors, mqtt.Sensor{
+			Key:         "heating_volume_flow",
+			Name:        "Volumenstrom",
+			StateTopic:  FlowTopic(topicPrefix),
+			JSONField:   "heating",
+			Unit:        "L/min",
+			DeviceClass: "volume_flow_rate",
+			StateClass:  "measurement",
+			Icon:        "mdi:water-pump",
+			SubDevice:   &mqtt.SubDevice{Key: "heating", Name: "Heizung"},
+		})
+	}
+	if volumeFlows.DHW {
+		sensors = append(sensors, mqtt.Sensor{
+			Key:         "dhw_volume_flow",
+			Name:        "Volumenstrom",
+			StateTopic:  FlowTopic(topicPrefix),
+			JSONField:   "dhw",
+			Unit:        "L/min",
+			DeviceClass: "volume_flow_rate",
+			StateClass:  "measurement",
+			Icon:        "mdi:water-sync",
+			SubDevice:   &mqtt.SubDevice{Key: "dhw", Name: "Warmwasser"},
+		})
+	}
 
 	// Home Assistant muss das Hauptgerät kennen, bevor es Untergeräte über via_device verknüpfen kann.
 	mainDeviceSensors := make([]mqtt.Sensor, 0, len(sensors))
