@@ -39,7 +39,7 @@ permissions:
   - { action: shell, resource: "git log *", effect: allow }
   - { action: shell, resource: "git branch *", effect: allow }
   - { action: shell, resource: "git rev-parse *", effect: allow }
-  - { action: shell, resource: "git switch *", effect: ask }
+  - { action: shell, resource: "git switch *", effect: allow }
   - { action: shell, resource: "git add *", effect: allow }
   - { action: shell, resource: "git commit *", effect: ask }
   - { action: shell, resource: "git push *", effect: deny }
